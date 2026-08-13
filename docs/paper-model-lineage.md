@@ -2,6 +2,13 @@
 
 Strategy / rules / portfolio sizing are unchanged. This document only clarifies **model and experiment lineage**.
 
+## Runtime dependency note (Railway)
+
+Production deps are declared in `pyproject.toml` and locked by `uv.lock`.
+Railpack installs them via **uv** when `uv.lock` is present. Python is pinned to
+**3.13** (`.python-version` / `railpack.json`). LightGBM on Linux needs
+`libgomp1` (see `railpack.json` deploy aptPackages) — do not reuse macOS `libomp`.
+
 ## Paper model (current)
 
 | Field | Value |
