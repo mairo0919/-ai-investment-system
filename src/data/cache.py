@@ -14,6 +14,10 @@ from src.data.providers.base import REQUIRED_COLUMNS, BaseDataProvider
 
 logger = logging.getLogger(__name__)
 
+# Caches thinner than this are treated as incomplete stubs (e.g. a single-day
+# first fetch). Incremental refresh must not freeze that stub forever.
+MIN_ROWS_FOR_INCREMENTAL = 60
+
 
 class OhlcvCache:
     """File-backed OHLCV cache stored under ``data/raw`` (or a custom directory)."""
@@ -85,6 +89,19 @@ class OhlcvCache:
         cached = self.load(ticker)
         if cached is None:
             logger.info("Cache miss for %s; full download", ticker)
+            frame = provider.fetch(ticker, start=start, end=end, interval=interval)
+            self.save(ticker, frame)
+            return frame
+
+        # Incomplete stub cache (e.g. SAN.MC / ITX.MC with 1 row): always full
+        # historical fetch for the requested window — never incremental-extend.
+        if len(cached) < MIN_ROWS_FOR_INCREMENTAL:
+            logger.info(
+                "Cache for %s has only %d rows (< %d); full historical download",
+                ticker,
+                len(cached),
+                MIN_ROWS_FOR_INCREMENTAL,
+            )
             frame = provider.fetch(ticker, start=start, end=end, interval=interval)
             self.save(ticker, frame)
             return frame
