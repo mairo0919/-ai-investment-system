@@ -1,0 +1,26 @@
+{
+  "name": "phase5_forward_paper_monitoring",
+  "description": "Forward paper trading with frozen FINAL US strategy. No retuning. No brokerage.",
+  "extends": "config/true_holdout.json",
+  "immutable_strategy": true,
+  "country": "United States",
+  "forward": {
+    "start": "2026-08-01",
+    "locked": true,
+    "rationale": "Starts after Phase 4D true holdout end 2026-07-31. Dates locked before execution."
+  },
+  "model_freeze": {
+    "retrain_forbidden": true,
+    "purge_days": 5,
+    "early_stopping_valid_days": 252,
+    "note": "Train once on pre-forward data only; never auto-retrain in this phase."
+  },
+  "data_freshness": {
+    "max_stale_calendar_days": 5,
+    "reject_stale_for_orders": true
+  },
+  "brokerage": {
+    "enabled": false,
+    "note": "Paper trading only. No real orders."
+  }
+}

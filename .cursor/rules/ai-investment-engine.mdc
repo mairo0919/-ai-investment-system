@@ -1,0 +1,77 @@
+---
+description: AI投資エンジンの基本思想と開発制約（予測AIではない／当面yfinance）
+alwaysApply: true
+---
+
+# AI Investment Engine — 基本思想
+
+このリポジトリは「株価予測AI」ではない。最終目標は **世界株対応のAI投資エンジン** である。
+
+## 目的
+
+- AIの役割は「上がる/下がるを当てる」ことではない
+- 市場全体から **期待値が高い銘柄を順位付けする** ことが目的
+- AIは **期待値・順位・信頼度** などを出力する
+- **売買判断は Rule Engine** が行う（AI単独で「買う」と決めない）
+
+## データ取得方針（当面）
+
+- 市場データProviderは **yfinance に統一**
+- 対象は日本株・米国株・欧州株など、yfinanceで取得可能な市場
+- **J-Quants / 有料公式APIは今は実装しない**（差し替え可能な Provider 設計だけ維持）
+- システム全体が yfinance 固有実装へ直接依存しないこと
+
+## 評価
+
+Accuracy / ROC-AUC 単独を最重要視しない。
+
+重視する指標（該当フェーズで）:
+
+- Top10% / Top20% Average Return
+- Excess Return
+- Information Coefficient
+- Rank Correlation
+- Global / Country / Market / Sector Ranking（評価基盤）
+- Sharpe / Max Drawdown（バックテスト以降）
+
+最重要問いは:
+
+> AIが上位に置いた銘柄ほど、将来リターンが高かったか？
+
+## モデル方針
+
+- LogisticRegression / LightGBM はベースライン
+- 現段階で XGBoost / CatBoost / Transformer / LLM を追加しない
+- モデル複雑化より **データ品質** を優先する
+
+## 現時点で実装しないもの
+
+明示的な指示があるまで、以下は実装しない:
+
+- J-Quants / 有料マーケットデータAPI
+- Phase 4 売買シグナル
+- バックテスト / フォワードテスト
+- 証券会社API / 実売買
+- 損切り・利確・ポジションサイズの本番エンジン
+
+まず証明するのは:
+
+> yfinance の世界株データ基盤の上で、AIランキングに再現性があるか
+
+## 実装ルール
+
+- 既存コードは可能な限り活かす
+- 不要な大規模リファクタリングは禁止
+- Look-ahead bias を発生させない
+- Test を見ながら仕様を都合よく調整しない
+- Universe は最初 50〜100 銘柄規模。世界全銘柄の一括取得はしない
+
+## 開発順序（当面）
+
+1. yfinance 世界株データ基盤（キャッシュ・メタデータ・Universe）
+2. ランキング評価基盤（売買なし）
+3. 銘柄ユニバース拡充（日/米/欧ミックス）
+4. Walk-Forward + Cross-sectional Ranking 検証
+5. 期待値分析
+6. 以降: バックテスト → Rule Engine → リスク → フォワード → 証券API  
+   （J-Quants 等の公式Providerは必要になった時点で追加）

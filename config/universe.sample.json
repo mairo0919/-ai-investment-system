@@ -1,0 +1,86 @@
+{
+  "name": "pilot_global_8",
+  "description": "Small JP/US/EU pilot universe for development speed. Expand toward 50-100 names later.",
+  "instruments": [
+    {
+      "symbol": "7203.T",
+      "exchange": "TSE",
+      "country": "JP",
+      "currency": "JPY",
+      "sector": "Consumer Cyclical",
+      "industry": "Auto Manufacturers",
+      "timezone": "Asia/Tokyo",
+      "market": "TSE"
+    },
+    {
+      "symbol": "6758.T",
+      "exchange": "TSE",
+      "country": "JP",
+      "currency": "JPY",
+      "sector": "Technology",
+      "industry": "Consumer Electronics",
+      "timezone": "Asia/Tokyo",
+      "market": "TSE"
+    },
+    {
+      "symbol": "AAPL",
+      "exchange": "NASDAQ",
+      "country": "US",
+      "currency": "USD",
+      "sector": "Technology",
+      "industry": "Consumer Electronics",
+      "timezone": "America/New_York",
+      "market": "NASDAQ"
+    },
+    {
+      "symbol": "MSFT",
+      "exchange": "NASDAQ",
+      "country": "US",
+      "currency": "USD",
+      "sector": "Technology",
+      "industry": "Software - Infrastructure",
+      "timezone": "America/New_York",
+      "market": "NASDAQ"
+    },
+    {
+      "symbol": "JPM",
+      "exchange": "NYSE",
+      "country": "US",
+      "currency": "USD",
+      "sector": "Financial Services",
+      "industry": "Banks - Diversified",
+      "timezone": "America/New_York",
+      "market": "NYSE"
+    },
+    {
+      "symbol": "SAP.DE",
+      "exchange": "XETRA",
+      "country": "DE",
+      "currency": "EUR",
+      "sector": "Technology",
+      "industry": "Software - Application",
+      "timezone": "Europe/Berlin",
+      "market": "XETRA"
+    },
+    {
+      "symbol": "AIR.PA",
+      "exchange": "PAR",
+      "country": "FR",
+      "currency": "EUR",
+      "sector": "Industrials",
+      "industry": "Aerospace & Defense",
+      "timezone": "Europe/Paris",
+      "market": "PAR"
+    },
+    {
+      "symbol": "SHEL.L",
+      "exchange": "LSE",
+      "country": "GB",
+      "currency": "GBP",
+      "sector": "Energy",
+      "industry": "Oil & Gas Integrated",
+      "timezone": "Europe/London",
+      "market": "LSE"
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "name": "yfinance_macro_proxies_3g",
+  "description": "Verified yfinance tickers for Phase 3G macro / FX / commodity context. Unverified tickers are not included.",
+  "series": [
+    {
+      "ticker": "^VIX",
+      "key": "vix",
+      "category": "risk",
+      "style": "level",
+      "attach": "global"
+    },
+    {
+      "ticker": "^GSPC",
+      "key": "gspc",
+      "category": "equity_index",
+      "style": "return",
+      "attach": "global"
+    },
+    {
+      "ticker": "^N225",
+      "key": "n225",
+      "category": "equity_index",
+      "style": "return",
+      "attach": "global"
+    },
+    {
+      "ticker": "^STOXX50E",
+      "key": "stoxx",
+      "category": "equity_index",
+      "style": "return",
+      "attach": "global"
+    },
+    {
+      "ticker": "^TNX",
+      "key": "tnx",
+      "category": "rates",
+      "style": "level",
+      "attach": "global"
+    },
+    {
+      "ticker": "GC=F",
+      "key": "gold",
+      "category": "commodity",
+      "style": "return",
+      "attach": "global"
+    },
+    {
+      "ticker": "CL=F",
+      "key": "oil",
+      "category": "commodity",
+      "style": "return",
+      "attach": "global"
+    },
+    {
+      "ticker": "JPY=X",
+      "key": "jpy",
+      "category": "fx",
+      "style": "return",
+      "attach": "currency",
+      "regions": ["Japan"]
+    },
+    {
+      "ticker": "EURUSD=X",
+      "key": "eurusd",
+      "category": "fx",
+      "style": "return",
+      "attach": "currency",
+      "regions": ["Europe"]
+    },
+    {
+      "ticker": "DX-Y.NYB",
+      "key": "dxy",
+      "category": "fx",
+      "style": "return",
+      "attach": "currency",
+      "regions": ["United States"]
+    }
+  ],
+  "rejected": [
+    {"ticker": "DX=F", "reason": "yfinance download failed / possibly delisted"}
+  ]
+}

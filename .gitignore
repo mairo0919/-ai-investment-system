@@ -1,0 +1,113 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment variables (keep .env.example tracked)
+.env
+.env.*
+!.env.example
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# ---------------------------------------------------------------------------
+# Runtime data (never commit market caches / paper state / logs / reports)
+# Keep directory structure via .gitkeep only.
+# ---------------------------------------------------------------------------
+
+# Paper trading live state (portfolio / orders / equity) — local & Railway only
+data/paper/*
+!data/paper/.gitkeep
+
+data/raw/*
+!data/raw/.gitkeep
+!data/raw/market/
+data/raw/market/*
+!data/raw/market/.gitkeep
+
+data/processed/*
+!data/processed/.gitkeep
+!data/processed/market/
+data/processed/market/*
+!data/processed/market/.gitkeep
+!data/processed/integrated/
+data/processed/integrated/*
+!data/processed/integrated/.gitkeep
+
+# Model binaries & freeze artifacts (joblib etc.) — do not push to GitHub
+models/*
+!models/.gitkeep
+!models/paper_frozen/
+models/paper_frozen/*
+!models/paper_frozen/.gitkeep
+
+# Generated reports (holdout / paper / simulation outputs)
+reports/*
+!reports/.gitkeep
+!reports/experiments/
+reports/experiments/*
+!reports/experiments/.gitkeep
+!reports/walk_forward/
+reports/walk_forward/*
+!reports/walk_forward/.gitkeep
+!reports/stability/
+reports/stability/*
+!reports/stability/.gitkeep
+!reports/ranking/
+reports/ranking/*
+!reports/ranking/.gitkeep
+!reports/feature_expansion/
+reports/feature_expansion/*
+!reports/feature_expansion/.gitkeep
+!reports/label_resolution/
+reports/label_resolution/*
+!reports/label_resolution/.gitkeep
+!reports/paper/
+reports/paper/*
+!reports/paper/.gitkeep
+!reports/true_holdout/
+reports/true_holdout/*
+!reports/true_holdout/.gitkeep
+!reports/simulation/
+reports/simulation/*
+!reports/simulation/.gitkeep
+!reports/simulation_diagnostics/
+reports/simulation_diagnostics/*
+!reports/simulation_diagnostics/.gitkeep
+!reports/rule_optimization/
+reports/rule_optimization/*
+!reports/rule_optimization/.gitkeep
+
+logs/*
+!logs/.gitkeep
+
+# Jupyter
+.ipynb_checkpoints/

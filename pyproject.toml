@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-investment-system"
+version = "0.1.0"
+description = "日本株向けAI投資・自動売買システム"
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "MIT" }
+authors = [
+    { name = "AI Investment System" }
+]
+dependencies = [
+    "pandas>=2.2",
+    "numpy>=2.0",
+    "yfinance>=0.2",
+    "python-dotenv>=1.0",
+    "scikit-learn>=1.5",
+    "joblib>=1.4",
+    "lightgbm>=4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+fetch-market-data = "src.data.service:main"
+fetch-market-indices = "src.data.market_service:main"
+generate-features = "src.features.pipeline:main"
+train-model = "src.ml.trainer:main"
+run-experiments = "src.ml.experiments:main"
+run-walk-forward = "src.ml.walk_forward_runner:main"
+run-stability-analysis = "src.ml.stability_runner:main"
+run-learning-to-rank = "src.ml.ltr_runner:main"
+run-feature-expansion = "src.ml.ltr_feature_runner:main"
+run-label-resolution = "src.ml.ltr_resolution_runner:main"
+run-simulation = "src.simulation.runner:main"
+run-simulation-diagnostics = "src.simulation.diagnostics_runner:main"
+run-rule-optimization = "src.simulation.rule_optimization_runner:main"
+run-true-holdout = "src.simulation.holdout_runner:main"
+run-paper-trading = "src.paper.runner:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"

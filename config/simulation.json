@@ -1,0 +1,73 @@
+{
+  "name": "phase4_paper_trading_default",
+  "description": "Historical paper-trading simulation. Signal at day-T close; fill at day-T+1 open. Base currency JPY.",
+  "initial_capital": 10000000,
+  "base_currency": "JPY",
+  "signal_timing": "close_t_execute_open_t1",
+  "ranking": {
+    "label_scheme": "B",
+    "gain_name": "moderate_exp",
+    "feature_set": "A",
+    "param_preset": "default",
+    "horizon_days": 5
+  },
+  "candidate": {
+    "mode": "top_percentile",
+    "top_percentile": 0.10,
+    "top_n": 3
+  },
+  "portfolio": {
+    "max_positions": 10,
+    "max_position_weight": 0.10,
+    "max_country_weight": 0.50,
+    "sizing": "equal_weight",
+    "allow_duplicate_symbols": false
+  },
+  "exit_rules": {
+    "holding_period_days": 5,
+    "stop_loss_pct": -0.05,
+    "take_profit_pct": 0.10,
+    "ranking_exit_enabled": false,
+    "ranking_exit_percentile": 0.30
+  },
+  "costs": {
+    "commission_rate": 0.001,
+    "slippage_rate": 0.0005
+  },
+  "fx": {
+    "tickers": {
+      "USDJPY": "JPY=X",
+      "EURUSD": "EURUSD=X",
+      "GBPUSD": "GBPUSD=X",
+      "EURJPY": "EURJPY=X",
+      "GBPJPY": "GBPJPY=X",
+      "CHFJPY": "CHFJPY=X"
+    },
+    "policy": "Convert to JPY with point-in-time FX (asof backward). No silent 1:1. Symbols without convertible FX are excluded from Global."
+  },
+  "benchmarks": {
+    "Japan": "^N225",
+    "United States": "^GSPC",
+    "Europe": "^STOXX50E"
+  },
+  "strategies": {
+    "A": {
+      "top_percentile": 0.10,
+      "holding_period_days": 5,
+      "stop_loss_pct": -0.05,
+      "take_profit_pct": 0.10
+    },
+    "B": {
+      "top_percentile": 0.10,
+      "holding_period_days": 10,
+      "stop_loss_pct": -0.05,
+      "take_profit_pct": 0.10
+    },
+    "C": {
+      "top_percentile": 0.20,
+      "holding_period_days": 5,
+      "stop_loss_pct": -0.05,
+      "take_profit_pct": 0.10
+    }
+  }
+}

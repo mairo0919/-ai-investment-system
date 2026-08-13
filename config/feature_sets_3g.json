@@ -1,0 +1,31 @@
+{
+  "name": "phase_3g_feature_sets",
+  "min_sector_group_size": 3,
+  "cross_section_columns": [
+    "return_5d",
+    "return_20d",
+    "rsi_14",
+    "volatility_20",
+    "volume_ratio_20",
+    "close_sma_20_ratio",
+    "close_sma_60_ratio"
+  ],
+  "sector_relative_columns": [
+    "return_5d",
+    "return_20d",
+    "rsi_14",
+    "volatility_20"
+  ],
+  "relative_horizons": [1, 5, 20, 60],
+  "feature_sets": {
+    "A": {
+      "description": "Phase 3F baseline: stock technical + country market context"
+    },
+    "B": {
+      "description": "A + cross-sectional percentiles + sector-relative + relative strength"
+    },
+    "C": {
+      "description": "B + macro + currency + breadth + dispersion"
+    }
+  }
+}

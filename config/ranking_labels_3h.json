@@ -1,0 +1,51 @@
+{
+  "name": "phase_3h_label_schemes",
+  "description": "Label schemes for score-resolution diagnosis. Label D (raw ordinal 0..N-1) is skipped: unequal Date×Country group sizes make absolute ranks incomparable under a shared label_gain.",
+  "min_group_size": 5,
+  "ndcg_ks": [5, 10],
+  "tie_warning_ratio": 0.5,
+  "low_resolution_tie_threshold": 0.5,
+  "schemes": {
+    "A": {
+      "type": "buckets",
+      "max_relevance": 4,
+      "description": "Existing 5-level asymmetric buckets (top10/next20/mid40/next20/bottom10)"
+    },
+    "B": {
+      "type": "decile",
+      "max_relevance": 9,
+      "description": "10 equal deciles from within Date×Country future-return percentile"
+    },
+    "C": {
+      "type": "percentile_100",
+      "max_relevance": 99,
+      "description": "0..99 from floor(pct*100), clipped to 99"
+    },
+    "D": {
+      "type": "skipped_ordinal",
+      "implemented": false,
+      "reason": "Group sizes differ by Date×Country (and market). Absolute ranks 0..N-1 are not comparable across groups under one shared label_gain; unsafe for lambdarank."
+    }
+  },
+  "gains": {
+    "linear": "gain[i] = i",
+    "moderate_exp": "gain[i] = (1.25**i) - 1"
+  },
+  "ranker_param_presets": {
+    "default": {
+      "num_leaves": 31,
+      "min_child_samples": 20,
+      "max_bin": 255
+    },
+    "finer_leaves": {
+      "num_leaves": 63,
+      "min_child_samples": 10,
+      "max_bin": 255
+    },
+    "coarser_leaves": {
+      "num_leaves": 15,
+      "min_child_samples": 40,
+      "max_bin": 127
+    }
+  }
+}

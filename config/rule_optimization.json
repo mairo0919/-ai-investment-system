@@ -1,0 +1,67 @@
+{
+  "name": "phase4c_low_turnover_exit_rules",
+  "description": "Phase 4C: low-turnover + exit rule study on fixed AI rankings. Base = US CONCENTRATED.",
+  "extends": "config/simulation_diagnostics.json",
+  "initial_capital": 10000000,
+  "base_currency": "JPY",
+  "candidate": {
+    "mode": "top_percentile",
+    "top_percentile": 0.10
+  },
+  "portfolio": {
+    "max_positions": 5,
+    "max_position_weight": 0.20,
+    "max_country_weight": 1.0,
+    "sizing": "equal_weight"
+  },
+  "exit_rules": {
+    "holding_period_days": 10,
+    "stop_loss_pct": -0.05,
+    "take_profit_pct": 0.10,
+    "ranking_exit_enabled": false,
+    "trailing_stop_pct": null,
+    "cooldown_days": 0
+  },
+  "rebalance": {
+    "frequency": "weekly",
+    "weekly_weekday": 0
+  },
+  "quality_filters": {
+    "block_low_resolution_entries": false,
+    "use_score_separation_filter": false,
+    "train_threshold_quantile": 0.50
+  },
+  "costs": {
+    "commission_rate": 0.001,
+    "slippage_rate": 0.0005
+  },
+  "cost_presets": {
+    "gross": {"commission_rate": 0.0, "slippage_rate": 0.0},
+    "low": {"commission_rate": 0.0005, "slippage_rate": 0.00025},
+    "net": {"commission_rate": 0.001, "slippage_rate": 0.0005},
+    "high": {"commission_rate": 0.0015, "slippage_rate": 0.001}
+  },
+  "stop_diagnostics": {
+    "neutral_band": 0.02,
+    "further_drop_pct": -0.05,
+    "max_dd_worsen_limit": 0.05,
+    "aftermath_horizons": [1, 3, 5, 10, 20],
+    "note": "Thresholds fixed a priori. Do not retune from validation outcomes."
+  },
+  "strategies": {
+    "BASE_US_CONCENTRATED": {
+      "top_percentile": 0.10,
+      "holding_period_days": 10,
+      "rebalance_frequency": "weekly",
+      "max_positions": 5,
+      "max_position_weight": 0.20,
+      "max_country_weight": 1.0,
+      "stop_loss_pct": -0.05,
+      "take_profit_pct": 0.10,
+      "ranking_exit_enabled": false,
+      "trailing_stop_pct": null,
+      "cooldown_days": 0,
+      "use_score_separation_filter": false
+    }
+  }
+}

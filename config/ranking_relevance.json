@@ -1,0 +1,15 @@
+{
+  "name": "country_date_future_return_buckets",
+  "description": "Map Date×Country future-return ranks to Learning-to-Rank relevance labels. Future returns are labels only — never features.",
+  "group_keys": ["Date", "Region"],
+  "relevance_levels": [
+    {"relevance": 4, "min_percentile": 0.90, "max_percentile": 1.00, "label": "top_10pct"},
+    {"relevance": 3, "min_percentile": 0.70, "max_percentile": 0.90, "label": "next_20pct"},
+    {"relevance": 2, "min_percentile": 0.30, "max_percentile": 0.70, "label": "middle_40pct"},
+    {"relevance": 1, "min_percentile": 0.10, "max_percentile": 0.30, "label": "next_20pct_low"},
+    {"relevance": 0, "min_percentile": 0.00, "max_percentile": 0.10, "label": "bottom_10pct"}
+  ],
+  "min_group_size": 5,
+  "ndcg_ks": [5, 10],
+  "tie_warning_ratio": 0.5
+}

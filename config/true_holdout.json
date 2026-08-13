@@ -1,0 +1,51 @@
+{
+  "name": "phase4d_true_holdout",
+  "description": "True holdout validation of Phase 4C FINAL strategy. Configuration is immutable. Do not retune after seeing results.",
+  "extends": "config/rule_optimization.json",
+  "holdout": {
+    "locked": true,
+    "start": "2024-09-09",
+    "end": "2026-07-31",
+    "prior_selection_last_valid_end": "2024-09-06",
+    "rationale": "All Phase 3/4 Walk-Forward validation folds and Phase 4C rule selection used data through 2024-09-06. Holdout starts the next trading-week Monday 2024-09-09 and uses unused data through 2026-07-31 (~22 months). Dates locked before execution."
+  },
+  "phase4c_selection_reference": {
+    "source": "reports/rule_optimization/summary.json",
+    "us_mean_fold_net_return": 0.2957,
+    "label": "strategy_selection_performance_not_holdout"
+  },
+  "final_strategy": {
+    "immutable": true,
+    "top_percentile": 0.10,
+    "max_positions": 5,
+    "max_position_weight": 0.20,
+    "max_country_weight": 1.0,
+    "rebalance_frequency": "biweekly",
+    "holding_period_days": 20,
+    "take_profit_pct": 0.15,
+    "stop_loss_pct": null,
+    "trailing_stop_pct": null,
+    "cooldown_days": 5,
+    "ranking_exit_enabled": false,
+    "use_score_separation_filter": false,
+    "commission_rate": 0.001,
+    "slippage_rate": 0.0005
+  },
+  "ranking": {
+    "label_scheme": "B",
+    "gain_name": "moderate_exp",
+    "feature_set": "A",
+    "param_preset": "default",
+    "horizon_days": 5
+  },
+  "training": {
+    "purge_days": 5,
+    "early_stopping_valid_days": 252,
+    "note": "Early-stopping slice is taken only from pre-holdout dates. Holdout never enters fit or early stopping."
+  },
+  "cost_stress": {
+    "current": {"commission_rate": 0.001, "slippage_rate": 0.0005},
+    "high": {"commission_rate": 0.0015, "slippage_rate": 0.001},
+    "extreme": {"commission_rate": 0.002, "slippage_rate": 0.0015}
+  }
+}

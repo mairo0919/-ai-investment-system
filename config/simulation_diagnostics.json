@@ -1,0 +1,133 @@
+{
+  "name": "phase4b_strategy_diagnostics",
+  "description": "Phase 4B: diagnose turnover/cost/rule impact with fixed AI rankings. No new models.",
+  "extends": "config/simulation.json",
+  "initial_capital": 10000000,
+  "base_currency": "JPY",
+  "signal_timing": "close_t_execute_open_t1",
+  "ranking": {
+    "label_scheme": "B",
+    "gain_name": "moderate_exp",
+    "feature_set": "A",
+    "param_preset": "default",
+    "horizon_days": 5
+  },
+  "candidate": {
+    "mode": "top_percentile",
+    "top_percentile": 0.10,
+    "top_n": 3
+  },
+  "portfolio": {
+    "max_positions": 10,
+    "max_position_weight": 0.10,
+    "max_country_weight": 0.50,
+    "sizing": "equal_weight",
+    "allow_duplicate_symbols": false
+  },
+  "exit_rules": {
+    "holding_period_days": 5,
+    "stop_loss_pct": -0.05,
+    "take_profit_pct": 0.10,
+    "ranking_exit_enabled": false,
+    "ranking_exit_percentile": 0.30
+  },
+  "costs": {
+    "commission_rate": 0.001,
+    "slippage_rate": 0.0005
+  },
+  "cost_presets": {
+    "gross": {"commission_rate": 0.0, "slippage_rate": 0.0},
+    "low": {"commission_rate": 0.0005, "slippage_rate": 0.00025},
+    "net": {"commission_rate": 0.001, "slippage_rate": 0.0005}
+  },
+  "rebalance": {
+    "frequency": "daily",
+    "weekly_weekday": 0
+  },
+  "quality_filters": {
+    "block_low_resolution_entries": false,
+    "low_resolution_tie_threshold": 0.5,
+    "min_unique_score_ratio": null,
+    "min_score_std": null,
+    "min_top_median_gap": null,
+    "train_threshold_quantile": 0.25
+  },
+  "fx": {
+    "tickers": {
+      "USDJPY": "JPY=X",
+      "EURUSD": "EURUSD=X",
+      "GBPUSD": "GBPUSD=X",
+      "EURJPY": "EURJPY=X",
+      "GBPJPY": "GBPJPY=X",
+      "CHFJPY": "CHFJPY=X"
+    },
+    "policy": "Convert to JPY with point-in-time FX (asof backward). No silent 1:1."
+  },
+  "benchmarks": {
+    "Japan": "^N225",
+    "United States": "^GSPC",
+    "Europe": "^STOXX50E"
+  },
+  "strategies": {
+    "BASE": {
+      "top_percentile": 0.10,
+      "holding_period_days": 5,
+      "rebalance_frequency": "daily",
+      "max_positions": 10,
+      "ranking_exit_enabled": false,
+      "block_low_resolution_entries": false
+    },
+    "LONGER": {
+      "top_percentile": 0.10,
+      "holding_period_days": 10,
+      "rebalance_frequency": "daily",
+      "max_positions": 10,
+      "ranking_exit_enabled": false,
+      "block_low_resolution_entries": false
+    },
+    "LONG20": {
+      "top_percentile": 0.10,
+      "holding_period_days": 20,
+      "rebalance_frequency": "daily",
+      "max_positions": 10,
+      "ranking_exit_enabled": false,
+      "block_low_resolution_entries": false
+    },
+    "WEEKLY": {
+      "top_percentile": 0.10,
+      "holding_period_days": 10,
+      "rebalance_frequency": "weekly",
+      "max_positions": 10,
+      "ranking_exit_enabled": false,
+      "block_low_resolution_entries": false
+    },
+    "CONCENTRATED": {
+      "top_percentile": 0.10,
+      "holding_period_days": 10,
+      "rebalance_frequency": "weekly",
+      "max_positions": 5,
+      "max_position_weight": 0.20,
+      "ranking_exit_enabled": false,
+      "block_low_resolution_entries": false
+    },
+    "QUALITY_FILTER": {
+      "top_percentile": 0.10,
+      "holding_period_days": 10,
+      "rebalance_frequency": "weekly",
+      "max_positions": 10,
+      "ranking_exit_enabled": false,
+      "block_low_resolution_entries": true,
+      "use_train_dispersion_filter": true
+    }
+  },
+  "diagnostic_overlays": {
+    "ranking_exit_on": {
+      "ranking_exit_enabled": true,
+      "ranking_exit_percentile": 0.30
+    },
+    "positions_5": {
+      "max_positions": 5,
+      "max_position_weight": 0.20
+    }
+  }
+}
