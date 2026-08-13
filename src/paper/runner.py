@@ -50,6 +50,17 @@ from src.simulation.metrics import buy_and_hold_benchmark
 from src.simulation.ranking import attach_country_ranks
 from src.simulation.runner import SimulationRunner
 from src.utils.logging import setup_logging
+from src.utils.runtime_diag import (
+    current_phase,
+    install_atexit_hook,
+    install_signal_handlers,
+    log_diag,
+    log_process_boot,
+    log_top_level_exception,
+    mark_exit_status,
+    phase_span,
+    set_phase,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,12 +114,17 @@ class PaperTradingRunner:
     def run(self, *, force_refresh: bool = False) -> dict[str, Any]:
         print("Paper Trading Started (NO BROKERAGE)")
         print("FINAL strategy is IMMUTABLE — no retuning / no retrain.")
+        log_diag("paper_run_begin")
 
         try:
             print("[1/8] Updating market data...")
-            panel = self.base.lr._build_enriched_panel(force_refresh=force_refresh)
-            fx = self.base._build_fx(force_refresh=force_refresh)
-            price_panel = self.base._price_panel(panel)
+            # market_data_update / panel_build / cross_section / macro logged inside
+            # LabelResolutionRunner._build_enriched_panel (diag only).
+            with phase_span("panel_enrichment"):
+                panel = self.base.lr._build_enriched_panel(force_refresh=force_refresh)
+            with phase_span("fx_and_price_panel"):
+                fx = self.base._build_fx(force_refresh=force_refresh)
+                price_panel = self.base._price_panel(panel)
 
             print("[2/8] Generating features... (included in panel)")
             us_px = price_panel.loc[price_panel["Country"] == self.country].copy()
@@ -119,52 +135,58 @@ class PaperTradingRunner:
             print(f"  As-of close date: {asof.date()}")
 
             print("[3/8] Loading model...")
-            model, model_meta = self._ensure_frozen_model(panel)
+            with phase_span("model_load"):
+                model, model_meta = self._ensure_frozen_model(panel)
             model_id = str(model_meta["model_id"])
             assert_paper_model_id_locked(model_id, locked_id=LOCKED_PAPER_MODEL_ID)
 
             print("[4/8] Creating rankings...")
             feature_cols = list(model_meta["feature_list"])
-            scored = score_panel_with_frozen(
-                model=model,
-                panel=panel,
-                feature_cols=feature_cols,
-                start=self.forward_start,
-                end=asof,
-            )
+            with phase_span("model_inference"):
+                scored = score_panel_with_frozen(
+                    model=model,
+                    panel=panel,
+                    feature_cols=feature_cols,
+                    start=self.forward_start,
+                    end=asof,
+                )
             if scored.empty:
                 raise TrainingError("No scored rows in forward window")
-            country_col = "Region" if "Region" in scored.columns else "Country"
-            ai_rankings = attach_country_ranks(scored, country_col=country_col)
-            ai_rankings = ai_rankings.loc[ai_rankings["Country"] == self.country].copy()
+            with phase_span("signal_generation"):
+                country_col = "Region" if "Region" in scored.columns else "Country"
+                ai_rankings = attach_country_ranks(scored, country_col=country_col)
+                ai_rankings = ai_rankings.loc[ai_rankings["Country"] == self.country].copy()
 
-            mom = panel.copy()
-            mom["Date"] = pd.to_datetime(mom["Date"]).dt.normalize()
-            region_col = "Region" if "Region" in mom.columns else "Country"
-            mom = mom.loc[
-                (mom["Date"] >= self.forward_start)
-                & (mom["Date"] <= asof)
-                & (mom[region_col] == self.country)
-            ].dropna(subset=["return_20d"]).copy()
-            mom["score"] = momentum_scores(mom, feature_col="return_20d").to_numpy()
-            mom_rankings = attach_country_ranks(mom, country_col=region_col)
+                mom = panel.copy()
+                mom["Date"] = pd.to_datetime(mom["Date"]).dt.normalize()
+                region_col = "Region" if "Region" in mom.columns else "Country"
+                mom = mom.loc[
+                    (mom["Date"] >= self.forward_start)
+                    & (mom["Date"] <= asof)
+                    & (mom[region_col] == self.country)
+                ].dropna(subset=["return_20d"]).copy()
+                mom["score"] = momentum_scores(mom, feature_col="return_20d").to_numpy()
+                mom_rankings = attach_country_ranks(mom, country_col=region_col)
 
             print("[5/8] Evaluating portfolio...")
             state = self._load_or_init_state(model_id=model_id)
             if state.last_processed_date and pd.Timestamp(state.last_processed_date) >= asof:
                 print(f"  Idempotent skip: already processed through {state.last_processed_date}")
-                latest = self._write_reports(
-                    state=state,
-                    asof=asof,
-                    ai_rankings=ai_rankings,
-                    mom_rankings=mom_rankings,
-                    price_panel=us_px,
-                    fx=fx,
-                    model_meta=model_meta,
-                    skipped=True,
-                )
+                with phase_span("state_save"):
+                    latest = self._write_reports(
+                        state=state,
+                        asof=asof,
+                        ai_rankings=ai_rankings,
+                        mom_rankings=mom_rankings,
+                        price_panel=us_px,
+                        fx=fx,
+                        model_meta=model_meta,
+                        skipped=True,
+                    )
                 print("[8/8] Saving report... (unchanged)")
-                print("Completed.")
+                with phase_span("run_completed"):
+                    print("Completed.")
+                    log_diag("paper_run_completed_idempotent_skip")
                 return latest
 
             # Need price buffer before forward for calendars continuity when resuming
@@ -199,41 +221,42 @@ class PaperTradingRunner:
                 return latest
 
             print("[6/8] Creating paper orders...")
-            portfolio = state.to_portfolio()
-            # Preserve closed trade history separately; engine portfolio.trades starts empty
-            n_trades_before = 0
-            if self.store.trade_history_path.exists():
-                n_trades_before = len(pd.read_csv(self.store.trade_history_path))
+            with phase_span("order_decision"):
+                portfolio = state.to_portfolio()
+                # Preserve closed trade history separately; engine portfolio.trades starts empty
+                n_trades_before = 0
+                if self.store.trade_history_path.exists():
+                    n_trades_before = len(pd.read_csv(self.store.trade_history_path))
 
-            pending_engine = [
-                o.to_engine_order() for o in state.pending_orders if o.status == "PENDING"
-            ]
-            cooldown = {
-                k: pd.Timestamp(v) for k, v in state.cooldown_until.items()
-            }
+                pending_engine = [
+                    o.to_engine_order() for o in state.pending_orders if o.status == "PENDING"
+                ]
+                cooldown = {
+                    k: pd.Timestamp(v) for k, v in state.cooldown_until.items()
+                }
 
-            # Track order keys before run
-            pre_keys = set(state.seen_order_keys)
+                # Track order keys before run
+                pre_keys = set(state.seen_order_keys)
 
-            engine = SimulationEngine(self.cfg, fx=fx, countries={self.country})
-            # Calendar must include days from sim_start; for first run need >=2 days ideally
-            cal_days = sorted(px_window.loc[px_window["Date"] >= sim_start, "Date"].unique())
-            min_days = 1 if state.last_processed_date else 2
-            if len(cal_days) < min_days and len(cal_days) >= 1:
-                min_days = 1
-            if not len(cal_days):
-                raise TrainingError("Empty simulation calendar for catch-up")
+                engine = SimulationEngine(self.cfg, fx=fx, countries={self.country})
+                # Calendar must include days from sim_start; for first run need >=2 days ideally
+                cal_days = sorted(px_window.loc[px_window["Date"] >= sim_start, "Date"].unique())
+                min_days = 1 if state.last_processed_date else 2
+                if len(cal_days) < min_days and len(cal_days) >= 1:
+                    min_days = 1
+                if not len(cal_days):
+                    raise TrainingError("Empty simulation calendar for catch-up")
 
-            result = engine.run(
-                prices=px_window,
-                rankings=rk_window,
-                start=sim_start,
-                end=asof,
-                portfolio=portfolio,
-                pending=pending_engine,
-                cooldown_until=cooldown,
-                min_calendar_days=min_days,
-            )
+                result = engine.run(
+                    prices=px_window,
+                    rankings=rk_window,
+                    start=sim_start,
+                    end=asof,
+                    portfolio=portfolio,
+                    pending=pending_engine,
+                    cooldown_until=cooldown,
+                    min_calendar_days=min_days,
+                )
 
             # Sync state
             assert result.portfolio is not None
@@ -343,28 +366,34 @@ class PaperTradingRunner:
             )
 
             print("[8/8] Saving report...")
-            # Atomic save of portfolio state LAST after reports built from memory
-            self.store.append_trades(trade_rows)
-            self.store.append_audit(audit_rows)
-            self.store.save_atomic(state)
+            with phase_span("state_save"):
+                # Atomic save of portfolio state LAST after reports built from memory
+                self.store.append_trades(trade_rows)
+                self.store.append_audit(audit_rows)
+                self.store.save_atomic(state)
 
-            latest = self._write_reports(
-                state=state,
-                asof=asof,
-                ai_rankings=ai_rankings,
-                mom_rankings=mom_rankings,
-                price_panel=us_px,
-                fx=fx,
-                model_meta=model_meta,
-                skipped=False,
-            )
+                latest = self._write_reports(
+                    state=state,
+                    asof=asof,
+                    ai_rankings=ai_rankings,
+                    mom_rankings=mom_rankings,
+                    price_panel=us_px,
+                    fx=fx,
+                    model_meta=model_meta,
+                    skipped=False,
+                )
             self._print_recommendation(latest)
-            print("Completed.")
-            print("No actual brokerage orders were submitted.")
+            with phase_span("run_completed"):
+                print("Completed.")
+                print("No actual brokerage orders were submitted.")
+                log_diag("paper_run_completed")
             return latest
 
         except Exception as exc:
-            logger.exception("Paper trading failed; no partial state write attempted after error path")
+            logger.exception(
+                "Paper trading failed in phase=%s; no partial state write attempted after error path",
+                current_phase(),
+            )
             # Failure safety: do not save partial — we only save_atomic after successful engine run
             raise TrainingError(f"Paper trading aborted safely: {exc}") from exc
 
@@ -799,15 +828,29 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = get_settings()
     setup_logging(settings.log_dir, settings.log_level)
+    install_signal_handlers()
+    install_atexit_hook()
+    log_process_boot()
+    set_phase("main")
     try:
-        PaperTradingRunner(settings, args.universe, args.config).run(
-            force_refresh=args.force_refresh
-        )
-    except Exception as exc:  # noqa: BLE001
+        with phase_span("paper_trading_main"):
+            PaperTradingRunner(settings, args.universe, args.config).run(
+                force_refresh=args.force_refresh
+            )
+        mark_exit_status("ok")
+        log_diag("main_return_ok")
+        return 0
+    except BaseException as exc:  # noqa: BLE001 — diagnose then re-raise SystemExit path
+        if isinstance(exc, SystemExit):
+            mark_exit_status(f"system_exit:{exc.code}")
+            raise
+        mark_exit_status(f"error:{type(exc).__name__}")
+        log_top_level_exception(exc)
         logger.exception("run-paper-trading failed: %s", exc)
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    return 0
+    finally:
+        log_diag(f"main_finally status_pending_atexit phase={current_phase()}")
 
 
 if __name__ == "__main__":

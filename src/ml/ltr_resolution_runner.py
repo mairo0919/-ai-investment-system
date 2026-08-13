@@ -194,31 +194,40 @@ class LabelResolutionRunner:
         return overview
 
     def _build_enriched_panel(self, *, force_refresh: bool) -> pd.DataFrame:
-        fetch_summary = self.wf._fetch_equities(force_refresh=force_refresh)
-        usable_meta, _quality = self.wf._select_usable_symbols(
-            fetch_summary, enrich_metadata=False
-        )
-        market_frames = self.wf._fetch_benchmarks(force_refresh=force_refresh)
-        panel = self.wf._build_panel(usable_meta, market_frames)
-        mkt_ohlcv = {
-            region: self.wf.cache.load(ticker)
-            for region, (ticker, _) in REGION_BENCHMARKS.items()
-        }
-        if any(v is None for v in mkt_ohlcv.values()):
-            raise TrainingError("Missing benchmark OHLCV cache for 60d relative strength")
-        panel = attach_mkt_return_60d(
-            panel, compute_mkt_return_60d({k: v for k, v in mkt_ohlcv.items() if v is not None})
-        )
-        panel = add_cross_section_feature_block(panel, min_sector_group_size=3)
-        macro_frames = fetch_macro_feature_frames(
-            self.wf.provider,
-            self.wf.cache,
-            self.macro_specs,
-            lookback_years=self.settings.lookback_years,
-            interval=self.settings.interval,
-            force_refresh=force_refresh,
-        )
-        panel, _ = join_macro_and_currency_features(panel, macro_frames)
+        # Diagnostic phase markers only (no feature / strategy changes).
+        from src.utils.runtime_diag import phase_span
+
+        with phase_span("market_data_update"):
+            fetch_summary = self.wf._fetch_equities(force_refresh=force_refresh)
+            usable_meta, _quality = self.wf._select_usable_symbols(
+                fetch_summary, enrich_metadata=False
+            )
+            market_frames = self.wf._fetch_benchmarks(force_refresh=force_refresh)
+        with phase_span("panel_build"):
+            panel = self.wf._build_panel(usable_meta, market_frames)
+            mkt_ohlcv = {
+                region: self.wf.cache.load(ticker)
+                for region, (ticker, _) in REGION_BENCHMARKS.items()
+            }
+            if any(v is None for v in mkt_ohlcv.values()):
+                raise TrainingError("Missing benchmark OHLCV cache for 60d relative strength")
+        with phase_span("feature_pipeline"):
+            panel = attach_mkt_return_60d(
+                panel,
+                compute_mkt_return_60d({k: v for k, v in mkt_ohlcv.items() if v is not None}),
+            )
+        with phase_span("cross_section_features"):
+            panel = add_cross_section_feature_block(panel, min_sector_group_size=3)
+        with phase_span("macro_features"):
+            macro_frames = fetch_macro_feature_frames(
+                self.wf.provider,
+                self.wf.cache,
+                self.macro_specs,
+                lookback_years=self.settings.lookback_years,
+                interval=self.settings.interval,
+                force_refresh=force_refresh,
+            )
+            panel, _ = join_macro_and_currency_features(panel, macro_frames)
         return panel
 
     def _run_experiment(
