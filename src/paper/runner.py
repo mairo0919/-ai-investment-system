@@ -34,7 +34,6 @@ from src.paper.lineage import (
 from src.paper.model_freeze import (
     FrozenRankerStore,
     score_panel_with_frozen,
-    train_and_freeze_ranker,
 )
 from src.paper.state import (
     PaperOrderRecord,
@@ -100,7 +99,7 @@ class PaperTradingRunner:
         if not self.raw.get("forward", {}).get("locked"):
             raise TrainingError("Forward start must be locked=true")
         self.country = str(self.raw.get("country") or COUNTRY)
-        self.store = PaperStore(settings.project_root / "data" / "paper")
+        self.store = PaperStore(settings.paper_state_dir)
         self.report_dir = settings.reports_dir / "paper"
         self.report_dir.mkdir(parents=True, exist_ok=True)
         (self.report_dir / "rankings").mkdir(parents=True, exist_ok=True)
@@ -398,22 +397,13 @@ class PaperTradingRunner:
             raise TrainingError(f"Paper trading aborted safely: {exc}") from exc
 
     def _ensure_frozen_model(self, panel: pd.DataFrame) -> tuple[Any, dict[str, Any]]:
-        feature_cols = list(self.base.lr.feature_sets[self.cfg.feature_set])
-        params = dict(self.base.lr.param_presets[self.cfg.param_preset])
-        freeze_cfg = self.raw.get("model_freeze") or {}
-        meta = train_and_freeze_ranker(
-            panel=panel,
-            cfg=self.cfg,
-            feature_cols=feature_cols,
-            params=params,
-            forward_start=self.forward_start,
-            purge_days=int(freeze_cfg.get("purge_days", 5)),
-            early_stopping_valid_days=int(freeze_cfg.get("early_stopping_valid_days", 252)),
-            store=self.model_store,
-            project_root=self.settings.project_root,
-        )
-        model, meta2 = self.model_store.load()
-        return model, meta2
+        """Load locked frozen artifacts only. Never trains on the paper path.
+
+        ``panel`` is unused; kept for call-site compatibility.
+        """
+        _ = panel
+        # Paper trading is IMMUTABLE: missing artifacts => fail-fast (no train_and_freeze).
+        return self.model_store.load_for_paper_trading()
 
     def _load_or_init_state(self, *, model_id: str) -> PaperState:
         existing = self.store.load()

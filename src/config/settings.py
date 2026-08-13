@@ -27,6 +27,7 @@ class Settings:
     models_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "models")
     reports_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "reports")
     log_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "logs")
+    paper_state_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "data" / "paper")
     log_level: str = "INFO"
     train_ratio: float = 0.70
     valid_ratio: float = 0.15
@@ -88,6 +89,9 @@ def get_settings() -> Settings:
         models_dir=_as_project_path(os.getenv("MODELS_DIR", "models")),
         reports_dir=_as_project_path(os.getenv("REPORTS_DIR", "reports")),
         log_dir=_as_project_path(os.getenv("LOG_DIR", "logs")),
+        paper_state_dir=_as_project_path(
+            os.getenv("PAPER_STATE_DIR", "data/paper")
+        ),
         log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
         train_ratio=train_ratio,
         valid_ratio=valid_ratio,

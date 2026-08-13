@@ -59,6 +59,31 @@ class FrozenRankerStore:
     def exists(self) -> bool:
         return self.meta_path.exists() and self.model_path.exists()
 
+    def missing_required_artifacts(self) -> list[str]:
+        """Paths required for paper trading load (lineage JSON is optional)."""
+        missing: list[str] = []
+        if not self.model_path.exists():
+            missing.append(str(self.model_path))
+        if not self.meta_path.exists():
+            missing.append(str(self.meta_path))
+        return missing
+
+    def require_exists_for_paper_trading(self) -> None:
+        """Fail-fast when locked frozen artifacts are absent (never train here)."""
+        missing = self.missing_required_artifacts()
+        if not missing:
+            return
+        raise TrainingError(
+            "Locked frozen paper model artifacts missing for paper trading. "
+            f"expected model_id: {LOCKED_PAPER_MODEL_ID}. "
+            f"expected model directory: {self.root}. "
+            f"missing files: {missing}. "
+            "automatic retraining is forbidden in paper trading. "
+            "Confirm Railway Volume / model artifact placement "
+            f"(e.g. MODELS_DIR/paper_frozen with lgbm_ranker.joblib and "
+            f"model_meta.json whose model_id is {LOCKED_PAPER_MODEL_ID})."
+        )
+
     def ensure_lineage_metadata(self, freeze_meta: dict[str, Any]) -> dict[str, Any]:
         """Write/refresh canonical lineage metadata (does not retrain)."""
         lineage = metadata_from_freeze_meta(freeze_meta)
@@ -76,6 +101,13 @@ class FrozenRankerStore:
             raise TrainingError("Frozen model metadata corrupted (retrain_forbidden)")
         self.ensure_lineage_metadata(meta)
         model = joblib.load(self.model_path)
+        return model, meta
+
+    def load_for_paper_trading(self) -> tuple[Any, dict[str, Any]]:
+        """Load locked frozen model for paper trading; never trains."""
+        self.require_exists_for_paper_trading()
+        model, meta = self.load()
+        assert_paper_model_id_locked(str(meta.get("model_id")))
         return model, meta
 
     def save(
