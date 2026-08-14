@@ -16,7 +16,7 @@ import pandas as pd
 from src.config.settings import PROJECT_ROOT, Settings, get_settings
 from src.core.exceptions import TrainingError
 from src.ml.ltr_baselines import momentum_scores
-from src.paper.atomic_io import atomic_write_json
+from src.paper.validity_gate import evaluate_validity_gate, persist_validity_gate
 from src.paper.cost_audit import cost_monotonicity_report, path_dependence_note
 from src.paper.diagnostics import (
     daily_risk_snapshot,
@@ -207,6 +207,7 @@ class PaperTradingRunner:
                 with phase_span("run_completed"):
                     print("Completed.")
                     log_diag("paper_run_completed_idempotent_skip")
+                self._emit_validity_gate(asof=asof, model_id=model_id)
                 return latest
 
             # Need price buffer before forward for calendars continuity when resuming
@@ -238,6 +239,7 @@ class PaperTradingRunner:
                     skipped=True,
                 )
                 print("Completed.")
+                self._emit_validity_gate(asof=asof, model_id=model_id)
                 return latest
 
             print("[6/8] Creating paper orders...")
@@ -407,6 +409,7 @@ class PaperTradingRunner:
                 print("Completed.")
                 print("No actual brokerage orders were submitted.")
                 log_diag("paper_run_completed")
+            self._emit_validity_gate(asof=asof, model_id=model_id)
             return latest
 
         except Exception as exc:
@@ -416,6 +419,30 @@ class PaperTradingRunner:
             )
             # Failure safety: do not save partial — we only save_atomic after successful engine run
             raise TrainingError(f"Paper trading aborted safely: {exc}") from exc
+
+    def _emit_validity_gate(self, *, asof: pd.Timestamp, model_id: str) -> None:
+        """Phase 5B monitoring only — never mutates trading state or retrains."""
+        try:
+            with phase_span("validity_gate"):
+                result = evaluate_validity_gate(
+                    store=self.store,
+                    initial_capital=float(self.cfg.initial_capital),
+                    model_id=model_id,
+                    asof=asof,
+                    rebalance_frequency=str(self.cfg.rebalance_frequency),
+                    benchmark_track_path=self.report_dir / "benchmark_track.json",
+                    momentum_state_path=self.report_dir / "momentum_state.json",
+                )
+                persist_validity_gate(
+                    result,
+                    paper_state_dir=self.store.root,
+                    reports_paper_dir=self.report_dir,
+                )
+                print(f"Validity gate: {result.get('status')} asof={result.get('asof')}")
+                if result.get("review_reasons"):
+                    print(f"  review_reasons={result.get('review_reasons')}")
+        except Exception:  # noqa: BLE001 — monitoring must not break paper trading
+            logger.exception("Validity gate failed (non-fatal; paper state unchanged)")
 
     def _ensure_frozen_model(self, panel: pd.DataFrame) -> tuple[Any, dict[str, Any]]:
         """Load locked frozen artifacts only. Never trains on the paper path.

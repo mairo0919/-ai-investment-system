@@ -1,0 +1,40 @@
+{
+  "name": "phase5b_paper_validity_gate",
+  "description": "Monitoring-only gate for frozen paper model. Does not change trading, features, or retrain.",
+  "model_id_locked": "paper_4ab12cb5ade1681f",
+  "statuses": [
+    "HOLD_INSUFFICIENT_DATA",
+    "CONTINUE",
+    "MODEL_REVIEW_REQUIRED"
+  ],
+  "sample": {
+    "min_completed_trades": 30,
+    "min_return_days": 60,
+    "source": "src/paper/diagnostics.py performance_summary.statistically_insufficient",
+    "rebalance_count": "reported for context (biweekly); not a separate gate"
+  },
+  "require_benchmark": true,
+  "require_benchmark_note": "US paper uses SPX total_return from existing benchmark_track.json; missing => HOLD_INSUFFICIENT_DATA (never treat as 0%)",
+  "review": {
+    "major_single_trigger": {
+      "source": "src/simulation/holdout_diagnostics.py success_checklist F/G/I inverted",
+      "F_top1_share_ge": 0.50,
+      "G_top_sector_share_ge": 0.60,
+      "I_worst_mae_le": -0.40
+    },
+    "weak_inverted_checklist": {
+      "source": "success_checklist A/B/C/D/E/H inverted (same numeric cutoffs)",
+      "A_net_return_le": 0,
+      "B_sharpe_le": 0,
+      "C_benchmark_excess_le": 0,
+      "D_momentum_excess_le": 0,
+      "E_profit_factor_le": 1.0,
+      "H_positive_month_ratio_lt": 0.40
+    },
+    "weak_fail_count_for_review": 3,
+    "weak_aggregation_policy": "NEW — holdout lists binary checks without an aggregation rule; Phase 5B requires >=3 evaluated weak fails to reduce false positives"
+  },
+  "ranking_ic_ndcg": "not_computed — paper state lacks aligned future returns",
+  "auto_retrain": false,
+  "auto_halt_trading": false
+}
