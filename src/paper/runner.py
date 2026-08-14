@@ -16,7 +16,7 @@ import pandas as pd
 from src.config.settings import PROJECT_ROOT, Settings, get_settings
 from src.core.exceptions import TrainingError
 from src.ml.ltr_baselines import momentum_scores
-from src.paper.validity_gate import evaluate_validity_gate, persist_validity_gate
+from src.paper.atomic_io import atomic_write_json
 from src.paper.cost_audit import cost_monotonicity_report, path_dependence_note
 from src.paper.diagnostics import (
     daily_risk_snapshot,
@@ -35,6 +35,12 @@ from src.paper.model_freeze import (
     FrozenRankerStore,
     score_panel_with_frozen,
 )
+from src.paper.observation_store import (
+    STATUS_ERROR,
+    STATUS_SKIPPED,
+    STATUS_SUCCESS,
+    PaperObservationStore,
+)
 from src.paper.state import (
     PaperOrderRecord,
     PaperState,
@@ -42,6 +48,7 @@ from src.paper.state import (
     fill_idempotency_key,
     order_idempotency_key,
 )
+from src.paper.validity_gate import evaluate_validity_gate, persist_validity_gate
 from src.simulation.config import load_simulation_config
 from src.simulation.engine import SimulationEngine
 from src.simulation.holdout_runner import load_true_holdout_bundle
@@ -100,6 +107,7 @@ class PaperTradingRunner:
             raise TrainingError("Forward start must be locked=true")
         self.country = str(self.raw.get("country") or COUNTRY)
         self.store = PaperStore(settings.paper_state_dir)
+        self.observations = PaperObservationStore(settings.paper_state_dir)
         self.report_dir = settings.reports_dir / "paper"
         self.report_dir.mkdir(parents=True, exist_ok=True)
         (self.report_dir / "rankings").mkdir(parents=True, exist_ok=True)
@@ -114,6 +122,13 @@ class PaperTradingRunner:
         print("Paper Trading Started (NO BROKERAGE)")
         print("FINAL strategy is IMMUTABLE — no retuning / no retrain.")
         log_diag("paper_run_begin")
+
+        # Phase 5C run health context (best-effort; never mutates trading outcomes).
+        run_health_ctx: dict[str, Any] = {
+            "run_id": None,
+            "run_started_utc": None,
+            "model_id": None,
+        }
 
         try:
             print("[1/8] Updating market data...")
@@ -146,6 +161,10 @@ class PaperTradingRunner:
                 model, model_meta = self._ensure_frozen_model(panel)
             model_id = str(model_meta["model_id"])
             assert_paper_model_id_locked(model_id, locked_id=LOCKED_PAPER_MODEL_ID)
+            health0 = self.observations.begin_run(model_id=model_id)
+            run_health_ctx["run_id"] = health0.get("run_id")
+            run_health_ctx["run_started_utc"] = health0.get("last_run_started_utc")
+            run_health_ctx["model_id"] = model_id
 
             print("[4/8] Creating rankings...")
             feature_cols = list(model_meta["feature_list"])
@@ -207,6 +226,16 @@ class PaperTradingRunner:
                 with phase_span("run_completed"):
                     print("Completed.")
                     log_diag("paper_run_completed_idempotent_skip")
+                self._persist_observations(
+                    run_health_ctx=run_health_ctx,
+                    status=STATUS_SKIPPED,
+                    asof=asof,
+                    ai_rankings=ai_rankings,
+                    price_panel=us_px,
+                    session_days=[asof],
+                    processed_sessions=0,
+                    skip_reason="idempotent_already_processed",
+                )
                 self._emit_validity_gate(asof=asof, model_id=model_id)
                 return latest
 
@@ -239,6 +268,16 @@ class PaperTradingRunner:
                     skipped=True,
                 )
                 print("Completed.")
+                self._persist_observations(
+                    run_health_ctx=run_health_ctx,
+                    status=STATUS_SKIPPED,
+                    asof=asof,
+                    ai_rankings=ai_rankings,
+                    price_panel=us_px,
+                    session_days=[asof],
+                    processed_sessions=0,
+                    skip_reason="no_new_trading_days",
+                )
                 self._emit_validity_gate(asof=asof, model_id=model_id)
                 return latest
 
@@ -404,6 +443,17 @@ class PaperTradingRunner:
                     model_meta=model_meta,
                     skipped=False,
                 )
+            # Observation AFTER trading state commit — never rolls back portfolio on failure.
+            self._persist_observations(
+                run_health_ctx=run_health_ctx,
+                status=STATUS_SUCCESS,
+                asof=asof,
+                ai_rankings=ai_rankings,
+                price_panel=us_px,
+                session_days=[pd.Timestamp(d).normalize() for d in cal_days],
+                processed_sessions=len(cal_days),
+                skip_reason=None,
+            )
             self._print_recommendation(latest)
             with phase_span("run_completed"):
                 print("Completed.")
@@ -417,8 +467,95 @@ class PaperTradingRunner:
                 "Paper trading failed in phase=%s; no partial state write attempted after error path",
                 current_phase(),
             )
+            self._persist_run_error(run_health_ctx=run_health_ctx, exc=exc)
             # Failure safety: do not save partial — we only save_atomic after successful engine run
             raise TrainingError(f"Paper trading aborted safely: {exc}") from exc
+
+    def _persist_observations(
+        self,
+        *,
+        run_health_ctx: dict[str, Any],
+        status: str,
+        asof: pd.Timestamp,
+        ai_rankings: pd.DataFrame,
+        price_panel: pd.DataFrame,
+        session_days: list[pd.Timestamp],
+        processed_sessions: int,
+        skip_reason: str | None,
+    ) -> None:
+        """Phase 5C: Volume ranking snapshots + run health (non-fatal to trading).
+
+        Catch-up: for each engine calendar day that exists in ``ai_rankings``, save
+        that day's rows (day-correct scores from this run's inference). Dates absent
+        from ``ai_rankings`` are never invented / never filled with later-day scores.
+        """
+        model_id = str(run_health_ctx.get("model_id") or LOCKED_PAPER_MODEL_ID)
+        run_id = str(run_health_ctx.get("run_id") or f"orphan_{_utc_now()}")
+        started = str(run_health_ctx.get("run_started_utc") or _utc_now())
+        try:
+            with phase_span("observation_persist"):
+                counts = self.observations.save_processed_day_rankings(
+                    ai_rankings=ai_rankings,
+                    price_panel=price_panel,
+                    model_id=model_id,
+                    top_percentile=float(self.cfg.top_percentile),
+                    session_days=session_days,
+                )
+                conflict_days = list(counts.get("conflict_days") or [])
+                logger.info(
+                    "Paper observation rankings saved status=%s asof=%s counts=%s",
+                    status,
+                    asof.date(),
+                    {k: v for k, v in counts.items() if k != "conflict_days"},
+                )
+                if conflict_days:
+                    logger.error(
+                        "Ranking snapshot conflicts (first observation kept): %s",
+                        conflict_days,
+                    )
+                self.observations.finish_run(
+                    status=status,
+                    model_id=model_id,
+                    asof=asof,
+                    run_id=run_id,
+                    run_started_utc=started,
+                    processed_sessions=processed_sessions,
+                    skip_reason=skip_reason,
+                    ranking_snapshot_conflicts=conflict_days,
+                )
+        except Exception:  # noqa: BLE001 — never roll back paper trading state
+            logger.exception(
+                "CRITICAL: Paper observation persistence failed "
+                "(trading state NOT rolled back; ranking/health may be incomplete)"
+            )
+
+    def _persist_run_error(
+        self, *, run_health_ctx: dict[str, Any], exc: BaseException
+    ) -> None:
+        """Best-effort ERROR health; must not alter or replace the original exception."""
+        try:
+            model_id = str(
+                run_health_ctx.get("model_id")
+                or self.observations.load_health().get("model_id")
+                or LOCKED_PAPER_MODEL_ID
+            )
+            run_id = str(run_health_ctx.get("run_id") or f"error_{_utc_now()}")
+            started = str(run_health_ctx.get("run_started_utc") or _utc_now())
+            self.observations.finish_run(
+                status=STATUS_ERROR,
+                model_id=model_id,
+                asof=None,
+                run_id=run_id,
+                run_started_utc=started,
+                processed_sessions=0,
+                skip_reason=None,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
+        except Exception:  # noqa: BLE001 — never mask paper failure
+            logger.exception(
+                "Failed to persist ERROR run_health (original paper exception preserved)"
+            )
 
     def _emit_validity_gate(self, *, asof: pd.Timestamp, model_id: str) -> None:
         """Phase 5B monitoring only — never mutates trading state or retrains."""
