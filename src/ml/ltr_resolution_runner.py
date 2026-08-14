@@ -195,6 +195,20 @@ class LabelResolutionRunner:
 
     def _build_enriched_panel(self, *, force_refresh: bool) -> pd.DataFrame:
         # Diagnostic phase markers only (no feature / strategy changes).
+        return self._build_enriched_panel_impl(force_refresh=force_refresh, paper_lean=False)
+
+    def _build_paper_feature_a_panel(self, *, force_refresh: bool) -> pd.DataFrame:
+        """Paper Trading only: stop after panel_build (Feature Set A inputs).
+
+        Skips ``mkt_return_60d``, cross-section, and macro joins that the locked
+        Feature Set A frozen model does not read. Research / WF callers must keep
+        using ``_build_enriched_panel``.
+        """
+        return self._build_enriched_panel_impl(force_refresh=force_refresh, paper_lean=True)
+
+    def _build_enriched_panel_impl(
+        self, *, force_refresh: bool, paper_lean: bool
+    ) -> pd.DataFrame:
         from src.utils.runtime_diag import phase_span
 
         with phase_span("market_data_update"):
@@ -205,12 +219,32 @@ class LabelResolutionRunner:
             market_frames = self.wf._fetch_benchmarks(force_refresh=force_refresh)
         with phase_span("panel_build"):
             panel = self.wf._build_panel(usable_meta, market_frames)
-            mkt_ohlcv = {
-                region: self.wf.cache.load(ticker)
-                for region, (ticker, _) in REGION_BENCHMARKS.items()
-            }
-            if any(v is None for v in mkt_ohlcv.values()):
-                raise TrainingError("Missing benchmark OHLCV cache for 60d relative strength")
+            if paper_lean:
+                logger.info(
+                    "Paper lean panel: skip mkt_return_60d / cross_section / macro "
+                    "(Feature Set A frozen path) rows=%d cols=%d",
+                    len(panel),
+                    panel.shape[1],
+                )
+            else:
+                mkt_ohlcv = {
+                    region: self.wf.cache.load(ticker)
+                    for region, (ticker, _) in REGION_BENCHMARKS.items()
+                }
+                if any(v is None for v in mkt_ohlcv.values()):
+                    raise TrainingError(
+                        "Missing benchmark OHLCV cache for 60d relative strength"
+                    )
+        if paper_lean:
+            # Keep DIAG phase names for Railway continuity; work is intentionally skipped.
+            with phase_span("feature_pipeline"):
+                pass
+            with phase_span("cross_section_features"):
+                pass
+            with phase_span("macro_features"):
+                pass
+            return panel
+
         with phase_span("feature_pipeline"):
             panel = attach_mkt_return_60d(
                 panel,

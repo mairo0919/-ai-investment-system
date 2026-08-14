@@ -120,7 +120,15 @@ class PaperTradingRunner:
             # market_data_update / panel_build / cross_section / macro logged inside
             # LabelResolutionRunner._build_enriched_panel (diag only).
             with phase_span("panel_enrichment"):
-                panel = self.base.lr._build_enriched_panel(force_refresh=force_refresh)
+                # Locked paper model is Feature Set A: skip CS/macro/mkt_return_60d.
+                if str(self.cfg.feature_set) == "A":
+                    panel = self.base.lr._build_paper_feature_a_panel(
+                        force_refresh=force_refresh
+                    )
+                else:
+                    panel = self.base.lr._build_enriched_panel(
+                        force_refresh=force_refresh
+                    )
             with phase_span("fx_and_price_panel"):
                 fx = self.base._build_fx(force_refresh=force_refresh)
                 price_panel = self.base._price_panel(panel)
@@ -141,6 +149,12 @@ class PaperTradingRunner:
 
             print("[4/8] Creating rankings...")
             feature_cols = list(model_meta["feature_list"])
+            missing_feats = [c for c in feature_cols if c not in panel.columns]
+            if missing_feats:
+                raise TrainingError(
+                    "Paper lean panel missing frozen feature_list columns: "
+                    f"{missing_feats}. Full enrichment may be required for this model."
+                )
             with phase_span("model_inference"):
                 scored = score_panel_with_frozen(
                     model=model,
