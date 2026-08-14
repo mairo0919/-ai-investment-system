@@ -273,7 +273,16 @@ class SimulationRunner:
         cols = ["Date", "Symbol", "Country", "Currency", "Open", "High", "Low", "Close"]
         # Country column on panel is JP/US/...; engine uses Region-like Japan/...
         # Prefer Region as Country for portfolio country limits.
-        frame = panel.copy()
+        # Memory: copy only columns required for the transform (not the full panel).
+        src_cols = ["Date", "Symbol", "Currency", "Open", "High", "Low", "Close"]
+        if "Region" in panel.columns:
+            src_cols.append("Region")
+        else:
+            src_cols.append("Country")
+        missing_src = [c for c in src_cols if c not in panel.columns]
+        if missing_src:
+            raise TrainingError(f"Price panel missing columns: {missing_src}")
+        frame = panel.loc[:, src_cols].copy()
         frame["Date"] = pd.to_datetime(frame["Date"]).dt.normalize()
         if "Region" in frame.columns:
             frame["Country"] = frame["Region"]

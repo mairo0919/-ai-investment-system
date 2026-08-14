@@ -240,15 +240,28 @@ def score_panel_with_frozen(
     start: pd.Timestamp,
     end: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
-    frame = panel.copy()
+    """Score forward-window rows with a frozen ranker.
+
+    Copies only columns required for ranking (Date/Symbol/country + feature_list)
+    so the full enriched panel is not duplicated. Does not mutate ``panel``.
+    Feature matrix column order follows ``feature_cols`` exactly.
+    """
+    feature_cols = list(feature_cols)
+    country_col = "Region" if "Region" in panel.columns else "Country"
+    keep: list[str] = []
+    for col in ("Date", "Symbol", country_col, *feature_cols):
+        if col in panel.columns and col not in keep:
+            keep.append(col)
+    frame = panel.loc[:, keep].copy()
     frame["Date"] = pd.to_datetime(frame["Date"]).dt.normalize()
     mask = frame["Date"] >= start
     if end is not None:
         mask &= frame["Date"] <= end
-    hold = frame.loc[mask].dropna(subset=[c for c in feature_cols if c in frame.columns]).copy()
+    drop_subset = [c for c in feature_cols if c in frame.columns]
+    # Single copy of the filtered window (needed for safe score assignment).
+    hold = frame.loc[mask].dropna(subset=drop_subset).copy()
     if hold.empty:
         return hold
-    x = hold.loc[:, list(feature_cols)].replace([np.inf, -np.inf], np.nan)
-    hold = hold.copy()
+    x = hold.loc[:, feature_cols].replace([np.inf, -np.inf], np.nan)
     hold["score"] = predict_rank_scores(model, x)
     return hold

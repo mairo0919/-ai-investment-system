@@ -156,9 +156,14 @@ class PaperTradingRunner:
                 ai_rankings = attach_country_ranks(scored, country_col=country_col)
                 ai_rankings = ai_rankings.loc[ai_rankings["Country"] == self.country].copy()
 
-                mom = panel.copy()
+                # Momentum track only needs Date/Symbol/region/return_20d (not full panel).
+                region_col = "Region" if "Region" in panel.columns else "Country"
+                mom_cols = ["Date", "Symbol", region_col, "return_20d"]
+                missing_mom = [c for c in mom_cols if c not in panel.columns]
+                if missing_mom:
+                    raise TrainingError(f"Momentum panel missing columns: {missing_mom}")
+                mom = panel.loc[:, mom_cols].copy()
                 mom["Date"] = pd.to_datetime(mom["Date"]).dt.normalize()
-                region_col = "Region" if "Region" in mom.columns else "Country"
                 mom = mom.loc[
                     (mom["Date"] >= self.forward_start)
                     & (mom["Date"] <= asof)
@@ -166,6 +171,8 @@ class PaperTradingRunner:
                 ].dropna(subset=["return_20d"]).copy()
                 mom["score"] = momentum_scores(mom, feature_col="return_20d").to_numpy()
                 mom_rankings = attach_country_ranks(mom, country_col=region_col)
+                # Full enriched panel / intermediates no longer referenced after rankings.
+                del scored, mom, panel
 
             print("[5/8] Evaluating portfolio...")
             state = self._load_or_init_state(model_id=model_id)
