@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import math
 from typing import Any
 
 
@@ -125,6 +126,31 @@ _STATUS_LABELS_JA: dict[str, str] = {
     "CONTINUE": "検証継続",
     "MODEL_REVIEW_REQUIRED": "モデル要確認",
 }
+
+
+def format_number(value: float | int | None, *, digits: int = 2) -> str:
+    if value is None:
+        return "—"
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if not math.isfinite(num):
+        return "—"
+    return esc(f"{num:.{digits}f}")
+
+
+def format_ratio(value: float | int | None, *, digits: int = 2) -> str:
+    """Sharpe / profit factor — no percent sign."""
+    if value is None:
+        return "—"
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if not math.isfinite(num):
+        return "—"
+    return esc(f"{num:.{digits}f}")
 
 
 def status_label(status: str | None) -> str | None:

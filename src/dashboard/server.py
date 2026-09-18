@@ -21,11 +21,16 @@ from src.dashboard.data import DashboardDataSource
 from src.dashboard.metrics import (
     build_current_portfolio,
     build_overview,
+    build_performance,
     build_system_status,
     get_equity_curve,
 )
-from src.dashboard.templates import render_not_found, render_overview, render_unavailable
-
+from src.dashboard.templates import (
+    render_not_found,
+    render_overview,
+    render_performance,
+    render_unavailable,
+)
 logger = logging.getLogger(__name__)
 
 SERVICE_NAME = "paper-dashboard"
@@ -91,6 +96,9 @@ class DashboardApp:
         if route == "/":
             return self._overview()
 
+        if route == "/performance":
+            return self._performance()
+
         body = render_not_found(experiment_id=self.experiment_id).encode("utf-8")
         headers = {"Content-Type": "text/html; charset=utf-8", "Content-Length": str(len(body))}
         if method_u == "HEAD":
@@ -135,6 +143,34 @@ class DashboardApp:
             )
         except Exception:  # noqa: BLE001 — never leak internals to clients
             logger.exception("Dashboard overview failed")
+            raw = render_unavailable(experiment_id=self.experiment_id).encode("utf-8")
+            return (
+                500,
+                {
+                    "Content-Type": "text/html; charset=utf-8",
+                    "Content-Length": str(len(raw)),
+                    "Cache-Control": "no-store",
+                },
+                raw,
+            )
+
+    def _performance(self) -> tuple[int, dict[str, str], bytes]:
+        try:
+            src = self.source
+            performance = build_performance(src)
+            html = render_performance(performance=performance)
+            raw = html.encode("utf-8")
+            return (
+                200,
+                {
+                    "Content-Type": "text/html; charset=utf-8",
+                    "Content-Length": str(len(raw)),
+                    "Cache-Control": "no-store",
+                },
+                raw,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Dashboard performance failed")
             raw = render_unavailable(experiment_id=self.experiment_id).encode("utf-8")
             return (
                 500,

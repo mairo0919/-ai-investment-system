@@ -206,24 +206,32 @@ def compute_dashboard_performance(
 
 
 def get_equity_curve(source: DashboardDataSource) -> list[dict[str, Any]]:
+    """Equity history rows from equity_history.csv (SSOT). Includes PnL columns when present."""
     equity = source.load_equity_history()
     if equity is None or equity.empty or "Date" not in equity.columns:
         return []
+    initial = float(source.initial_capital)
+    has_realized = "Realized PnL" in equity.columns
+    has_unrealized = "Unrealized PnL" in equity.columns
+    has_n = "N Positions" in equity.columns
     rows: list[dict[str, Any]] = []
     for _, r in equity.iterrows():
         date = _s(r.get("Date"))
         te = _f(r.get("Total Equity"))
         if date is None or te is None:
             continue
-        rows.append(
-            {
-                "date": date,
-                "total_equity": te,
-                "cash": _f(r.get("Cash")),
-                "position_value": _f(r.get("Position Value")),
-                "drawdown": _f(r.get("Drawdown")),
-            }
-        )
+        row: dict[str, Any] = {
+            "date": date,
+            "total_equity": te,
+            "cash": _f(r.get("Cash")),
+            "position_value": _f(r.get("Position Value")),
+            "drawdown": _f(r.get("Drawdown")),
+            "cumulative_pnl": float(te - initial),
+            "realized_pnl": _f(r.get("Realized PnL")) if has_realized else None,
+            "unrealized_pnl": _f(r.get("Unrealized PnL")) if has_unrealized else None,
+            "n_positions": _i(r.get("N Positions")) if has_n else None,
+        }
+        rows.append(row)
     return rows
 
 
@@ -248,9 +256,14 @@ def _daily_returns(equity: pd.DataFrame | None) -> list[dict[str, Any]]:
 
 
 def _monthly_returns(equity: pd.DataFrame | None) -> list[dict[str, Any]]:
-    if equity is None or equity.empty:
+    if equity is None or equity.empty or "Date" not in equity.columns:
         return []
-    monthly = monthly_performance(equity)
+    if "Total Equity" not in equity.columns:
+        return []
+    try:
+        monthly = monthly_performance(equity)
+    except (KeyError, TypeError, ValueError):
+        return []
     if monthly is None or monthly.empty:
         return []
     rows: list[dict[str, Any]] = []
@@ -284,7 +297,6 @@ def build_overview(source: DashboardDataSource) -> dict[str, Any]:
         if initial > 0:
             total_return = float(current_equity / initial - 1.0)
 
-    # Prefer equity-based metrics when available (same formula as compute_performance).
     if equity is not None and not equity.empty and "Total Equity" in equity.columns:
         perf = compute_dashboard_performance(
             equity, trades, initial_capital=initial
@@ -343,11 +355,88 @@ def build_overview(source: DashboardDataSource) -> dict[str, Any]:
     }
 
 
-def build_performance(source: DashboardDataSource) -> dict[str, Any]:
-    equity = source.load_equity_history()
-    trades = source.load_trade_history()
-    port = source.load_portfolio()
+def build_daily_performance_rows(
+    source: DashboardDataSource, *, limit: int = 30
+) -> list[dict[str, Any]]:
+    """Daily P/L and return from consecutive Total Equity (first row incomparable)."""
+    curve = get_equity_curve(source)
+    if not curve:
+        return []
+    out: list[dict[str, Any]] = []
+    prev_te: float | None = None
+    for row in curve:
+        te = row.get("total_equity")
+        daily_pnl = None
+        daily_ret = None
+        if prev_te is not None and te is not None:
+            daily_pnl = float(te) - float(prev_te)
+            if abs(float(prev_te)) > 1e-12:
+                daily_ret = daily_pnl / float(prev_te)
+        out.append(
+            {
+                "date": row.get("date"),
+                "total_equity": te,
+                "daily_pnl": daily_pnl,
+                "daily_return": daily_ret,
+                "drawdown": row.get("drawdown"),
+                "n_positions": row.get("n_positions"),
+            }
+        )
+        prev_te = float(te) if te is not None else prev_te
+    # newest first, capped
+    return list(reversed(out))[: max(0, int(limit))]
 
+
+def build_monthly_performance_rows(source: DashboardDataSource) -> list[dict[str, Any]]:
+    """Reuse monthly_performance; attach month-end equity / monthly PnL when derivable."""
+    equity = source.load_equity_history()
+    if (
+        equity is None
+        or equity.empty
+        or "Total Equity" not in equity.columns
+        or "Date" not in equity.columns
+    ):
+        return []
+    try:
+        monthly = monthly_performance(equity)
+    except (KeyError, TypeError, ValueError):
+        return []
+    if monthly is None or monthly.empty:
+        return []
+
+    eq = equity.copy()
+    eq["Date"] = pd.to_datetime(eq["Date"], errors="coerce")
+    eq = eq.dropna(subset=["Date"]).sort_values("Date")
+    s = eq.set_index("Date")["Total Equity"].astype(float)
+    month_end = s.resample("ME").last().dropna()
+    month_end.index = month_end.index.strftime("%Y-%m")
+    month_keys = list(month_end.index)
+
+    rows: list[dict[str, Any]] = []
+    for _, r in monthly.iterrows():
+        month = str(r["month"])
+        end_eq = _f(month_end.loc[month]) if month in month_end.index else None
+        month_pnl = None
+        if month in month_keys:
+            idx = month_keys.index(month)
+            if idx > 0 and end_eq is not None:
+                prev = _f(month_end.iloc[idx - 1])
+                if prev is not None:
+                    month_pnl = float(end_eq) - float(prev)
+        rows.append(
+            {
+                "month": month,
+                "strategy_return": float(r["strategy_return"]),
+                "month_end_equity": end_eq,
+                "month_pnl": month_pnl,
+            }
+        )
+    return rows
+
+
+def build_trade_summary(source: DashboardDataSource) -> dict[str, Any]:
+    trades = source.load_trade_history()
+    equity = source.load_equity_history()
     if equity is None:
         equity = pd.DataFrame()
     if trades is None:
@@ -356,21 +445,107 @@ def build_performance(source: DashboardDataSource) -> dict[str, Any]:
     perf = compute_dashboard_performance(
         equity, trades, initial_capital=float(source.initial_capital)
     )
+    wins = losses = 0
+    best = worst = None
+    if not trades.empty and "Net PnL" in trades.columns:
+        nets = trades["Net PnL"].astype(float)
+        finite = nets[np.isfinite(nets)]
+        wins = int((finite > 0).sum())
+        losses = int((finite <= 0).sum())
+        if len(finite):
+            best = float(finite.max())
+            worst = float(finite.min())
+
     return {
-        "experiment_id": source.experiment_id,
-        "total_return": perf.get("total_return"),
-        "cumulative_return": perf.get("cumulative_return"),
-        "daily_returns": _daily_returns(equity if not equity.empty else None),
-        "monthly_returns": _monthly_returns(equity if not equity.empty else None),
-        "sharpe": perf.get("sharpe"),
-        "max_drawdown": perf.get("max_drawdown"),
-        "win_rate": perf.get("win_rate"),
         "completed_trades": perf.get("completed_trades"),
-        "profit_factor": perf.get("profit_factor"),
+        "wins": wins if not trades.empty else None,
+        "losses": losses if not trades.empty else None,
+        "win_rate": perf.get("win_rate"),
         "average_win": perf.get("average_win"),
         "average_loss": perf.get("average_loss"),
+        "profit_factor": perf.get("profit_factor"),
+        "best_trade": best,
+        "worst_trade": worst,
+    }
+
+
+def equity_curve_stats(
+    curve: list[dict[str, Any]], *, initial_capital: float
+) -> dict[str, Any]:
+    if not curve:
+        return {
+            "start_date": None,
+            "end_date": None,
+            "start_equity": None,
+            "current_equity": None,
+            "peak_equity": None,
+            "trough_equity": None,
+            "has_realized_history": False,
+            "has_unrealized_history": False,
+        }
+    tes = [float(r["total_equity"]) for r in curve if r.get("total_equity") is not None]
+    return {
+        "start_date": curve[0].get("date"),
+        "end_date": curve[-1].get("date"),
+        "start_equity": tes[0] if tes else None,
+        "current_equity": tes[-1] if tes else None,
+        "peak_equity": max(tes) if tes else None,
+        "trough_equity": min(tes) if tes else None,
+        "initial_capital": float(initial_capital),
+        "has_realized_history": any(r.get("realized_pnl") is not None for r in curve),
+        "has_unrealized_history": any(r.get("unrealized_pnl") is not None for r in curve),
+    }
+
+
+def build_performance(source: DashboardDataSource) -> dict[str, Any]:
+    equity = source.load_equity_history()
+    trades = source.load_trade_history()
+    port = source.load_portfolio()
+    curve = get_equity_curve(source)
+    initial = float(source.initial_capital)
+
+    if equity is None:
+        equity = pd.DataFrame()
+    if trades is None:
+        trades = pd.DataFrame()
+
+    perf = compute_dashboard_performance(
+        equity, trades, initial_capital=initial
+    )
+    stats = equity_curve_stats(curve, initial_capital=initial)
+    current_equity = _f(port.get("total_equity")) if port else stats.get("current_equity")
+    total_pnl = None
+    if current_equity is not None:
+        total_pnl = float(current_equity) - initial
+    elif perf.get("total_return") is not None:
+        total_pnl = float(perf["total_return"]) * initial
+
+    trade_summary = build_trade_summary(source)
+
+    return {
+        "experiment_id": source.experiment_id,
+        "base_currency": _s(port.get("base_currency")) if port else None,
+        "initial_capital": initial,
+        "current_equity": current_equity,
+        "total_pnl": total_pnl,
+        "total_return": perf.get("total_return"),
+        "cumulative_return": perf.get("cumulative_return"),
         "realized_pnl": _f(port.get("realized_pnl")) if port else None,
         "unrealized_pnl": _f(port.get("unrealized_pnl")) if port else None,
+        "max_drawdown": perf.get("max_drawdown"),
+        "sharpe": perf.get("sharpe"),
+        "win_rate": perf.get("win_rate"),
+        "profit_factor": perf.get("profit_factor"),
+        "completed_trades": perf.get("completed_trades"),
+        "average_win": perf.get("average_win"),
+        "average_loss": perf.get("average_loss"),
+        "daily_returns": _daily_returns(equity if not equity.empty else None),
+        "monthly_returns": _monthly_returns(equity if not equity.empty else None),
+        "daily_rows": build_daily_performance_rows(source, limit=30),
+        "monthly_rows": build_monthly_performance_rows(source),
+        "trade_summary": trade_summary,
+        "equity_curve": curve,
+        "equity_stats": stats,
         "statistically_insufficient": perf.get("statistically_insufficient"),
         "note": perf.get("note"),
         "sortino": perf.get("sortino"),

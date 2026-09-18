@@ -135,7 +135,7 @@ def test_equity_curve_shape(tmp_path: Path, initial_capital: float) -> None:
     src = DashboardDataSource(tmp_path, initial_capital=initial_capital)
     curve = get_equity_curve(src)
     assert len(curve) == 4
-    assert set(curve[0].keys()) == {
+    assert set(curve[0].keys()) >= {
         "date",
         "total_equity",
         "cash",

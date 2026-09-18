@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.dashboard.charts import (
+    render_drawdown_chart,
+    render_equity_chart,
+    render_pnl_chart,
+)
 from src.dashboard.formatters import (
     dash,
     esc,
@@ -11,6 +16,7 @@ from src.dashboard.formatters import (
     format_percent,
     format_price,
     format_qty,
+    format_ratio,
     pnl_class,
     status_badge_class,
     status_label,
@@ -18,7 +24,7 @@ from src.dashboard.formatters import (
 
 NAV_ITEMS: tuple[tuple[str, str, bool], ...] = (
     ("概要", "/", True),
-    ("運用成績", "#", False),
+    ("運用成績", "/performance", True),
     ("保有銘柄", "#", False),
     ("売買履歴", "#", False),
     ("AIランキング", "#", False),
@@ -26,6 +32,7 @@ NAV_ITEMS: tuple[tuple[str, str, bool], ...] = (
 )
 
 NAV_ACTIVE_OVERVIEW = "概要"
+NAV_ACTIVE_PERFORMANCE = "運用成績"
 
 EQUITY_TAIL = 20
 
@@ -165,14 +172,43 @@ table.data td.num { text-align: right; font-family: var(--mono); font-size: .86r
 .equity-bar > span {
   display: block; height: 100%; background: linear-gradient(90deg, var(--accent-dim), var(--accent));
 }
+.chart-wrap {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 1rem; box-shadow: var(--shadow);
+}
+.chart-svg { width: 100%; height: auto; display: block; }
+.chart-empty {
+  padding: 1.5rem 1rem; color: var(--muted); text-align: center; font-size: .9rem;
+}
+.chart-meta {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .75rem;
+  margin-top: .85rem;
+}
+.chart-meta .item {
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 8px; padding: .65rem .8rem;
+}
+.chart-meta .item .k { font-size: .68rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.chart-meta .item .v { margin-top: .25rem; font-family: var(--mono); font-size: .88rem; }
+.section-head {
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline;
+  gap: .75rem; margin-bottom: .85rem;
+}
+.section-head h2 { margin: 0; }
+.link-btn {
+  display: inline-block; padding: .4rem .85rem; border-radius: 999px;
+  border: 1px solid rgba(91,141,239,.45); background: rgba(91,141,239,.12);
+  color: #cfe0ff; font-size: .82rem;
+}
+.note-muted { color: var(--muted); font-size: .85rem; margin: .5rem 0 0; }
 @media (max-width: 1100px) {
-  .cards, .status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cards, .status-grid, .chart-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 800px) {
   .layout { flex-direction: column; }
   .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--border); }
   .nav { flex-direction: row; flex-wrap: wrap; }
-  .cards, .status-grid { grid-template-columns: 1fr; }
+  .cards, .status-grid, .chart-meta { grid-template-columns: 1fr; }
   .main { padding: 1.1rem; }
 }
 """
@@ -429,6 +465,28 @@ def render_overview(
     else:
         equity_html = "<div class='panel empty'>資産推移データはまだありません。</div>"
 
+    mini_svg = render_equity_chart(
+        equity_curve,
+        initial_capital=_f_num(overview.get("initial_capital")),
+        mini=True,
+    )
+    init_cap = overview.get("initial_capital")
+    equity_summary = f"""
+    <div class="chart-wrap">
+      {mini_svg}
+      <div class="chart-meta">
+        <div class="item"><div class="k">初期資金</div>
+          <div class="v">{format_money(init_cap, currency=currency)}</div></div>
+        <div class="item"><div class="k">現在資産</div>
+          <div class="v">{format_money(eq, currency=currency)}</div></div>
+        <div class="item"><div class="k">累積損益</div>
+          <div class="v {pnl_class(pnl)}">{format_money(pnl, currency=currency, signed=True)}</div></div>
+        <div class="item"><div class="k">累積リターン</div>
+          <div class="v {pnl_class(ret)}">{format_percent(ret)}</div></div>
+      </div>
+    </div>
+    """
+
     body = f"""
     <section class="section">
       <h2>主要指標 · {esc(currency_label)}</h2>
@@ -443,7 +501,14 @@ def render_overview(
       {positions_html}
     </section>
     <section class="section">
-      <h2>資産推移</h2>
+      <div class="section-head">
+        <h2>総資産の推移</h2>
+        <a class="link-btn" href="/performance">詳細を見る</a>
+      </div>
+      {equity_summary}
+    </section>
+    <section class="section">
+      <h2>最近の資産推移</h2>
       {equity_html}
     </section>
     """
@@ -451,5 +516,246 @@ def render_overview(
         title="概要",
         experiment_label=str(experiment),
         active=NAV_ACTIVE_OVERVIEW,
+        body=body,
+    )
+
+
+def _f_num(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def render_performance(*, performance: dict[str, Any]) -> str:
+    currency = performance.get("base_currency")
+    currency_label = currency or "—"
+    experiment = performance.get("experiment_id") or "—"
+    curve = performance.get("equity_curve") or []
+    stats = performance.get("equity_stats") or {}
+    trade = performance.get("trade_summary") or {}
+    daily = performance.get("daily_rows") or []
+    monthly = performance.get("monthly_rows") or []
+
+    eq = performance.get("current_equity")
+    pnl = performance.get("total_pnl")
+    ret = performance.get("total_return")
+    realized = performance.get("realized_pnl")
+    unrealized = performance.get("unrealized_pnl")
+    mdd = performance.get("max_drawdown")
+    sharpe = performance.get("sharpe")
+    win_rate = performance.get("win_rate")
+    pf = performance.get("profit_factor")
+    n_trades = performance.get("completed_trades")
+    avg_win = performance.get("average_win")
+    avg_loss = performance.get("average_loss")
+    initial = performance.get("initial_capital")
+
+    cards = "".join(
+        [
+            _kpi_card("現在の総資産", format_money(eq, currency=currency), hint=currency_label),
+            _kpi_card(
+                "累積損益",
+                f'<span class="{pnl_class(pnl)}">{format_money(pnl, currency=currency, signed=True)}</span>',
+            ),
+            _kpi_card(
+                "累積リターン",
+                f'<span class="{pnl_class(ret)}">{format_percent(ret)}</span>',
+            ),
+            _kpi_card(
+                "実現損益",
+                f'<span class="{pnl_class(realized)}">{format_money(realized, currency=currency, signed=True)}</span>',
+            ),
+            _kpi_card(
+                "含み損益",
+                f'<span class="{pnl_class(unrealized)}">{format_money(unrealized, currency=currency, signed=True)}</span>',
+            ),
+            _kpi_card(
+                "最大ドローダウン",
+                f'<span class="{pnl_class(mdd)}">{format_percent(mdd)}</span>',
+            ),
+            _kpi_card("Sharpe Ratio", format_ratio(sharpe)),
+            _kpi_card("勝率", format_percent(win_rate, signed=False)),
+            _kpi_card("Profit Factor", format_ratio(pf)),
+            _kpi_card("完了トレード数", dash(n_trades)),
+            _kpi_card(
+                "平均利益",
+                f'<span class="pnl-pos">{format_money(avg_win, currency=currency, signed=True)}</span>',
+            ),
+            _kpi_card(
+                "平均損失",
+                f'<span class="pnl-neg">{format_money(avg_loss, currency=currency, signed=True)}</span>',
+            ),
+        ]
+    )
+
+    equity_svg = render_equity_chart(curve, initial_capital=_f_num(initial), mini=False)
+    equity_meta = f"""
+    <div class="chart-meta">
+      <div class="item"><div class="k">期間</div>
+        <div class="v">{dash(stats.get('start_date'))} → {dash(stats.get('end_date'))}</div></div>
+      <div class="item"><div class="k">開始資産</div>
+        <div class="v">{format_money(stats.get('start_equity'), currency=currency)}</div></div>
+      <div class="item"><div class="k">現在資産</div>
+        <div class="v">{format_money(stats.get('current_equity'), currency=currency)}</div></div>
+      <div class="item"><div class="k">最高 / 最低</div>
+        <div class="v">{format_money(stats.get('peak_equity'), currency=currency)}
+         / {format_money(stats.get('trough_equity'), currency=currency)}</div></div>
+    </div>
+    """
+
+    # PnL history: cumulative always from equity; realized/unrealized only if columns present
+    has_r = bool(stats.get("has_realized_history"))
+    has_u = bool(stats.get("has_unrealized_history"))
+    pnl_svg = render_pnl_chart(curve)
+    pnl_notes = []
+    if has_r:
+        pnl_notes.append("実現損益は equity_history の Realized PnL 列を使用")
+    else:
+        pnl_notes.append("実現損益の履歴データなし")
+    if has_u:
+        pnl_notes.append("含み損益は equity_history の Unrealized PnL 列を使用")
+    else:
+        pnl_notes.append("含み損益の履歴データなし")
+    pnl_note_html = "<p class='note-muted'>" + " · ".join(esc(n) for n in pnl_notes) + "</p>"
+
+    # Small table for realized/unrealized latest points if available
+    if curve and (has_r or has_u):
+        tail = list(reversed(curve[-12:]))
+        pr_rows = []
+        for r in tail:
+            pr_rows.append(
+                "<tr>"
+                f"<td>{dash(r.get('date'))}</td>"
+                f"<td class='num {pnl_class(r.get('cumulative_pnl'))}'>"
+                f"{format_money(r.get('cumulative_pnl'), currency=currency, signed=True)}</td>"
+                f"<td class='num'>{format_money(r.get('realized_pnl'), currency=currency, signed=True) if has_r else '—'}</td>"
+                f"<td class='num'>{format_money(r.get('unrealized_pnl'), currency=currency, signed=True) if has_u else '—'}</td>"
+                "</tr>"
+            )
+        pnl_table = (
+            "<div class='panel table-wrap'><table class='data'>"
+            "<thead><tr><th>日付</th><th>累積損益</th><th>実現損益</th><th>含み損益</th></tr></thead>"
+            f"<tbody>{''.join(pr_rows)}</tbody></table></div>"
+        )
+    else:
+        pnl_table = (
+            "<div class='panel empty'>累積損益チャートのみ表示可能です。"
+            "実現/含み損益の時系列が不足しています。</div>"
+        )
+
+    dd_svg = render_drawdown_chart(curve)
+
+    if daily:
+        d_rows = []
+        for r in daily:
+            d_rows.append(
+                "<tr>"
+                f"<td>{dash(r.get('date'))}</td>"
+                f"<td class='num'>{format_money(r.get('total_equity'), currency=currency)}</td>"
+                f"<td class='num {pnl_class(r.get('daily_pnl'))}'>"
+                f"{format_money(r.get('daily_pnl'), currency=currency, signed=True)}</td>"
+                f"<td class='num {pnl_class(r.get('daily_return'))}'>"
+                f"{format_percent(r.get('daily_return'))}</td>"
+                f"<td class='num {pnl_class(r.get('drawdown'))}'>"
+                f"{format_percent(r.get('drawdown'))}</td>"
+                f"<td class='num'>{dash(r.get('n_positions'))}</td>"
+                "</tr>"
+            )
+        daily_html = (
+            "<div class='panel table-wrap'><table class='data'>"
+            "<thead><tr><th>日付</th><th>総資産</th><th>日次損益</th>"
+            "<th>日次リターン</th><th>ドローダウン</th><th>保有銘柄数</th></tr></thead>"
+            f"<tbody>{''.join(d_rows)}</tbody></table></div>"
+        )
+    else:
+        daily_html = "<div class='panel empty'>日次成績データはありません。</div>"
+
+    if monthly:
+        m_rows = []
+        for r in monthly:
+            m_rows.append(
+                "<tr>"
+                f"<td>{dash(r.get('month'))}</td>"
+                f"<td class='num {pnl_class(r.get('strategy_return'))}'>"
+                f"{format_percent(r.get('strategy_return'))}</td>"
+                f"<td class='num'>{format_money(r.get('month_end_equity'), currency=currency)}</td>"
+                f"<td class='num {pnl_class(r.get('month_pnl'))}'>"
+                f"{format_money(r.get('month_pnl'), currency=currency, signed=True)}</td>"
+                "</tr>"
+            )
+        monthly_html = (
+            "<div class='panel table-wrap'><table class='data'>"
+            "<thead><tr><th>年月</th><th>月間リターン</th><th>月末総資産</th><th>月間損益</th></tr></thead>"
+            f"<tbody>{''.join(m_rows)}</tbody></table></div>"
+        )
+    else:
+        monthly_html = "<div class='panel empty'>月次成績データはありません。</div>"
+
+    trade_cards = "".join(
+        [
+            _kpi_card("完了トレード数", dash(trade.get("completed_trades"))),
+            _kpi_card("勝ち", dash(trade.get("wins"))),
+            _kpi_card("負け", dash(trade.get("losses"))),
+            _kpi_card("勝率", format_percent(trade.get("win_rate"), signed=False)),
+            _kpi_card(
+                "平均利益",
+                format_money(trade.get("average_win"), currency=currency, signed=True),
+            ),
+            _kpi_card(
+                "平均損失",
+                format_money(trade.get("average_loss"), currency=currency, signed=True),
+            ),
+            _kpi_card("Profit Factor", format_ratio(trade.get("profit_factor"))),
+            _kpi_card(
+                "Best Trade",
+                format_money(trade.get("best_trade"), currency=currency, signed=True),
+            ),
+            _kpi_card(
+                "Worst Trade",
+                format_money(trade.get("worst_trade"), currency=currency, signed=True),
+            ),
+        ]
+    )
+
+    body = f"""
+    <section class="section">
+      <h2>運用成績 KPI · {esc(currency_label)}</h2>
+      <div class="cards">{cards}</div>
+    </section>
+    <section class="section">
+      <h2>総資産の推移</h2>
+      <div class="chart-wrap">{equity_svg}{equity_meta}</div>
+    </section>
+    <section class="section">
+      <h2>損益推移</h2>
+      <div class="chart-wrap">{pnl_svg}{pnl_note_html}</div>
+      {pnl_table}
+    </section>
+    <section class="section">
+      <h2>ドローダウン推移</h2>
+      <div class="chart-wrap">{dd_svg}
+        <p class="note-muted">最大ドローダウン: <span class="{pnl_class(mdd)}">{format_percent(mdd)}</span></p>
+      </div>
+    </section>
+    <section class="section">
+      <h2>日次成績（直近）</h2>
+      {daily_html}
+    </section>
+    <section class="section">
+      <h2>月次成績</h2>
+      {monthly_html}
+    </section>
+    <section class="section">
+      <h2>トレード要約</h2>
+      <div class="cards">{trade_cards}</div>
+    </section>
+    """
+    return _shell(
+        title="運用成績",
+        experiment_label=str(experiment),
+        active=NAV_ACTIVE_PERFORMANCE,
         body=body,
     )
