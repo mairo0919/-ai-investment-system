@@ -19,7 +19,38 @@ from src.simulation.fx import FxConverter
 from src.simulation.orders import EquityPoint, Order
 from src.simulation.portfolio import Portfolio
 from src.simulation.quality import allow_new_entries, is_entry_rebalance_day
-from src.simulation.rules import entry_candidates, equal_weight_notional, evaluate_exits_for_day
+from src.simulation.execution_policy import (
+    DECISION_FILLED,
+    DECISION_QUEUED,
+    DECISION_REJECTED,
+    DECISION_SKIPPED,
+    REASON_AFFORDABLE,
+    REASON_FILL_PRICE_UNAFFORDABLE,
+)
+from src.simulation.rules import (
+    entry_candidates,
+    equal_weight_notional,
+    evaluate_exits_for_day,
+    plan_integer_affordable_entries,
+)
+
+
+def _pending_buy_reserved_cost(pending: list[Order], costs: CostModel) -> float:
+    """Virtual cash reserved by outstanding BUY notionals (gross + commission)."""
+    total = 0.0
+    for o in pending:
+        if o.side == "buy":
+            notional = float(o.quantity)
+            total += notional + costs.commission(notional)
+    return float(total)
+
+
+def _order_identity(order: Order, *, fill_date: pd.Timestamp | None = None) -> str:
+    sig = str(pd.Timestamp(order.signal_date).date())
+    parts = [sig, order.symbol, order.side, order.reason]
+    if fill_date is not None:
+        parts.append(str(pd.Timestamp(fill_date).date()))
+    return "|".join(parts)
 
 
 @dataclass
@@ -149,7 +180,16 @@ class SimulationEngine:
             "cooldown_blocks": 0,
             "entries_on_rebalance_days": [],
             "exits_on_rebalance_days": [],
+            "entry_skips": [],
         }
+        execution_events: list[dict[str, Any]] = []
+        # Estimated debit reserved per outstanding buy (signal_date|symbol).
+        buy_reservation: dict[str, float] = {}
+        for o in pending:
+            if o.side == "buy":
+                key = f"{pd.Timestamp(o.signal_date).date()}|{o.symbol}"
+                notional = float(o.quantity)
+                buy_reservation[key] = notional + self.costs.commission(notional)
 
         for i, day in enumerate(calendar):
             next_day = calendar[i + 1] if i + 1 < len(calendar) else None
@@ -166,24 +206,101 @@ class SimulationEngine:
                     continue
                 raw_open = float(open_map[day][order.symbol])
                 if order.side == "buy":
-                    try:
-                        portfolio.open_position(
-                            symbol=order.symbol,
-                            country=order.country,
-                            currency=order.currency,
-                            fill_date=day,
-                            raw_open=raw_open,
-                            target_notional_base=order.quantity,  # stores notional
-                            costs=self.costs,
-                            fx=self.fx,
-                            stop_loss_pct=self.cfg.stop_loss_pct,
-                            take_profit_pct=self.cfg.take_profit_pct,
-                            score=order.score,
-                            rank=order.rank,
-                            percentile=order.percentile,
-                        )
-                    except TrainingError:
-                        continue
+                    rkey = f"{pd.Timestamp(order.signal_date).date()}|{order.symbol}"
+                    reserved_amt = float(buy_reservation.pop(rkey, 0.0))
+                    cash_before_fill = float(portfolio.cash)
+                    if self.cfg.execution_policy.is_integer_affordable:
+                        try:
+                            fx_rate = self.fx.rate_to_base(order.currency, day)
+                        except Exception:  # noqa: BLE001
+                            fx_rate = float("nan")
+                        try:
+                            portfolio.open_position(
+                                symbol=order.symbol,
+                                country=order.country,
+                                currency=order.currency,
+                                fill_date=day,
+                                raw_open=raw_open,
+                                target_notional_base=order.quantity,
+                                costs=self.costs,
+                                fx=self.fx,
+                                stop_loss_pct=self.cfg.stop_loss_pct,
+                                take_profit_pct=self.cfg.take_profit_pct,
+                                score=order.score,
+                                rank=order.rank,
+                                percentile=order.percentile,
+                                execution_policy=self.cfg.execution_policy,
+                            )
+                            pos = portfolio.positions[order.symbol]
+                            execution_events.append(
+                                {
+                                    "Date": str(pd.Timestamp(order.signal_date).date()),
+                                    "Symbol": order.symbol,
+                                    "Rank": order.rank,
+                                    "Score": order.score,
+                                    "Decision": DECISION_FILLED,
+                                    "Reason": REASON_AFFORDABLE,
+                                    "Requested Notional Base": float(order.quantity),
+                                    "Tradable Quantity": float(pos.quantity),
+                                    "Estimated Price Local": float(raw_open),
+                                    "FX To Base": float(fx_rate) if fx_rate == fx_rate else None,
+                                    "Estimated Cost Base": float(
+                                        cash_before_fill - portfolio.cash
+                                    ),
+                                    "Cash Before": cash_before_fill,
+                                    "Cash Reserved": reserved_amt,
+                                    "Cash Available": cash_before_fill,
+                                    "Country": order.country,
+                                    "Currency": order.currency,
+                                    "order_identity": _order_identity(order, fill_date=day),
+                                    "fill_date": str(day.date()),
+                                }
+                            )
+                        except TrainingError:
+                            execution_events.append(
+                                {
+                                    "Date": str(pd.Timestamp(order.signal_date).date()),
+                                    "Symbol": order.symbol,
+                                    "Rank": order.rank,
+                                    "Score": order.score,
+                                    "Decision": DECISION_REJECTED,
+                                    "Reason": REASON_FILL_PRICE_UNAFFORDABLE,
+                                    "Requested Notional Base": float(order.quantity),
+                                    "Tradable Quantity": 0.0,
+                                    "Estimated Price Local": float(raw_open),
+                                    "FX To Base": float(fx_rate) if fx_rate == fx_rate else None,
+                                    "Estimated Cost Base": None,
+                                    "Cash Before": cash_before_fill,
+                                    "Cash Reserved": reserved_amt,
+                                    "Cash Available": cash_before_fill,
+                                    "Country": order.country,
+                                    "Currency": order.currency,
+                                    "order_identity": _order_identity(order, fill_date=day),
+                                    "fill_date": str(day.date()),
+                                }
+                            )
+                            # Reservation released; do not re-queue.
+                            continue
+                    else:
+                        try:
+                            portfolio.open_position(
+                                symbol=order.symbol,
+                                country=order.country,
+                                currency=order.currency,
+                                fill_date=day,
+                                raw_open=raw_open,
+                                target_notional_base=order.quantity,
+                                costs=self.costs,
+                                fx=self.fx,
+                                stop_loss_pct=self.cfg.stop_loss_pct,
+                                take_profit_pct=self.cfg.take_profit_pct,
+                                score=order.score,
+                                rank=order.rank,
+                                percentile=order.percentile,
+                                execution_policy=self.cfg.execution_policy,
+                            )
+                        except TrainingError:
+                            continue
                 else:
                     raw_fill = raw_open
                     if (
@@ -310,39 +427,135 @@ class SimulationEngine:
                             blocked = before - len(cands)
                             rebalance_stats["cooldown_blocks"] += int(blocked)
 
-                        n_new = len(cands)
-                        notional = equal_weight_notional(portfolio, self.cfg, n_new)
-                        for _, row in cands.iterrows():
-                            symbol = str(row["Symbol"])
-                            meta = meta_map.get(symbol)
-                            if meta is None:
-                                continue
-                            equity = portfolio.total_equity
-                            country = str(meta["Country"])
-                            cur_w = portfolio.country_weight(country)
-                            add_w = notional / equity if equity > 0 else 1.0
-                            if cur_w + add_w > self.cfg.max_country_weight + 1e-9:
-                                continue
-                            if len(portfolio.positions) + sum(
-                                1 for o in pending if o.side == "buy"
-                            ) >= self.cfg.max_positions:
-                                break
-                            pending.append(
-                                Order(
-                                    symbol=symbol,
-                                    country=country,
-                                    currency=str(meta["Currency"]),
+                        if self.cfg.execution_policy.is_integer_affordable:
+                            day_close = close_map.get(day, {})
+                            walk_day = filtered_day
+                            if exiting and not walk_day.empty:
+                                walk_day = walk_day.loc[~walk_day["Symbol"].isin(exiting)].copy()
+                            reserved_pending = _pending_buy_reserved_cost(pending, self.costs)
+                            available = float(portfolio.cash) - reserved_pending
+                            plans, skips = plan_integer_affordable_entries(
+                                walk_day,
+                                portfolio,
+                                self.cfg,
+                                costs=self.costs,
+                                fx=self.fx,
+                                signal_day=day,
+                                close_prices=day_close,
+                                meta_map=meta_map,
+                                pending_buy_symbols=pending_buy_symbols,
+                                cooldown_until=cooldown_until,
+                                countries=self.countries,
+                                remaining_cash=available,
+                                cash_reserved_before=reserved_pending,
+                            )
+                            for sk in skips:
+                                rebalance_stats["entry_skips"].append(
+                                    {
+                                        "date": str(day.date()),
+                                        "symbol": sk.symbol,
+                                        "reason": sk.reason,
+                                        "rank": sk.rank,
+                                    }
+                                )
+                                execution_events.append(
+                                    {
+                                        "Date": str(day.date()),
+                                        "Symbol": sk.symbol,
+                                        "Rank": sk.rank,
+                                        "Score": sk.score,
+                                        "Decision": DECISION_SKIPPED,
+                                        "Reason": sk.reason,
+                                        "Requested Notional Base": sk.requested_notional_base,
+                                        "Tradable Quantity": sk.tradable_quantity,
+                                        "Estimated Price Local": sk.estimated_price_local,
+                                        "FX To Base": sk.fx_to_base,
+                                        "Estimated Cost Base": sk.estimated_cost_base,
+                                        "Cash Before": sk.cash_before,
+                                        "Cash Reserved": sk.cash_reserved,
+                                        "Cash Available": sk.cash_available,
+                                        "Country": sk.country,
+                                        "Currency": sk.currency,
+                                        "order_identity": (
+                                            f"{day.date()}|{sk.symbol}|SKIPPED|"
+                                            f"{sk.reason}|{sk.rank}"
+                                        ),
+                                    }
+                                )
+                            for plan in plans:
+                                order = Order(
+                                    symbol=plan.symbol,
+                                    country=plan.country,
+                                    currency=plan.currency,
                                     side="buy",
-                                    quantity=notional,
+                                    quantity=plan.target_notional_base,
                                     signal_date=day,
                                     reason="entry_rank",
-                                    score=float(row["Score"]),
-                                    rank=int(row["Rank"]),
-                                    percentile=float(row["Percentile"]),
+                                    score=plan.score,
+                                    rank=plan.rank,
+                                    percentile=plan.percentile,
                                 )
-                            )
-                            day_entries += 1
-                            rebalance_stats["entries_queued"] += 1
+                                pending.append(order)
+                                rkey = f"{day.date()}|{plan.symbol}"
+                                buy_reservation[rkey] = float(plan.estimated_debit_base)
+                                execution_events.append(
+                                    {
+                                        "Date": str(day.date()),
+                                        "Symbol": plan.symbol,
+                                        "Rank": plan.rank,
+                                        "Score": plan.score,
+                                        "Decision": DECISION_QUEUED,
+                                        "Reason": REASON_AFFORDABLE,
+                                        "Requested Notional Base": plan.target_notional_base,
+                                        "Tradable Quantity": float(plan.shares),
+                                        "Estimated Price Local": plan.estimated_price_local,
+                                        "FX To Base": plan.fx_to_base,
+                                        "Estimated Cost Base": plan.estimated_debit_base,
+                                        "Cash Before": plan.cash_before,
+                                        "Cash Reserved": plan.cash_reserved
+                                        + plan.estimated_debit_base,
+                                        "Cash Available": plan.cash_available,
+                                        "Country": plan.country,
+                                        "Currency": plan.currency,
+                                        "order_identity": _order_identity(order),
+                                    }
+                                )
+                                day_entries += 1
+                                rebalance_stats["entries_queued"] += 1
+                        else:
+                            n_new = len(cands)
+                            notional = equal_weight_notional(portfolio, self.cfg, n_new)
+                            for _, row in cands.iterrows():
+                                symbol = str(row["Symbol"])
+                                meta = meta_map.get(symbol)
+                                if meta is None:
+                                    continue
+                                equity = portfolio.total_equity
+                                country = str(meta["Country"])
+                                cur_w = portfolio.country_weight(country)
+                                add_w = notional / equity if equity > 0 else 1.0
+                                if cur_w + add_w > self.cfg.max_country_weight + 1e-9:
+                                    continue
+                                if len(portfolio.positions) + sum(
+                                    1 for o in pending if o.side == "buy"
+                                ) >= self.cfg.max_positions:
+                                    break
+                                pending.append(
+                                    Order(
+                                        symbol=symbol,
+                                        country=country,
+                                        currency=str(meta["Currency"]),
+                                        side="buy",
+                                        quantity=notional,
+                                        signal_date=day,
+                                        reason="entry_rank",
+                                        score=float(row["Score"]),
+                                        rank=int(row["Rank"]),
+                                        percentile=float(row["Percentile"]),
+                                    )
+                                )
+                                day_entries += 1
+                                rebalance_stats["entries_queued"] += 1
 
                 if day_entries or day_exits:
                     rebalance_stats["entries_on_rebalance_days"].append(day_entries)
@@ -383,6 +596,7 @@ class SimulationEngine:
                 "cooldown_until": {
                     k: str(pd.Timestamp(v).date()) for k, v in cooldown_until.items()
                 },
+                "execution_events": list(execution_events),
                 "rebalance_stats": {
                     "entry_signal_days": rebalance_stats["entry_signal_days"],
                     "blocked_rebalance_days": rebalance_stats["blocked_rebalance_days"],
@@ -390,6 +604,7 @@ class SimulationEngine:
                     "entries_queued": rebalance_stats["entries_queued"],
                     "exits_queued": rebalance_stats["exits_queued"],
                     "cooldown_blocks": rebalance_stats["cooldown_blocks"],
+                    "entry_skips": list(rebalance_stats["entry_skips"]),
                     "avg_entries_per_rebalance": (
                         float(np.mean(rebalance_stats["entries_on_rebalance_days"]))
                         if rebalance_stats["entries_on_rebalance_days"]

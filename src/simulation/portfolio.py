@@ -8,6 +8,7 @@ import pandas as pd
 
 from src.core.exceptions import TrainingError
 from src.simulation.execution import CostModel
+from src.simulation.execution_policy import ExecutionPolicy, apply_integer_floor_to_notional
 from src.simulation.fx import FxConverter
 from src.simulation.orders import TradeRecord
 from src.simulation.position import Position
@@ -82,28 +83,49 @@ class Portfolio:
         score: float | None,
         rank: int | None,
         percentile: float | None,
+        execution_policy: ExecutionPolicy | None = None,
     ) -> Position:
         if symbol in self.positions:
             raise TrainingError(f"Duplicate position not allowed: {symbol}")
         if target_notional_base <= 0:
             raise TrainingError("target_notional_base must be positive")
 
+        policy = execution_policy or ExecutionPolicy.legacy()
         fx_rate = fx.rate_to_base(currency, fill_date)
         buy_px = costs.buy_unit_price(raw_open)
-        # shares from target notional after slippage unit price
-        qty = target_notional_base / (buy_px * fx_rate)
-        gross_base = qty * buy_px * fx_rate
-        commission = costs.commission(gross_base)
-        total_debit = gross_base + commission
-        if total_debit > self.cash + 1e-6:
-            # Scale down to available cash
-            scale = self.cash / (gross_base + commission) if (gross_base + commission) > 0 else 0.0
-            if scale <= 1e-12:
-                raise TrainingError("Insufficient cash for entry")
-            qty *= scale
+
+        if policy.share_mode == "integer":
+            qty, reason = apply_integer_floor_to_notional(
+                target_notional_base=target_notional_base,
+                raw_open=raw_open,
+                fx_rate=fx_rate,
+                costs=costs,
+                cash=self.cash,
+                minimum_quantity=policy.minimum_quantity,
+            )
+            if qty <= 0:
+                raise TrainingError(f"INTEGER_ENTRY_REJECTED:{reason or 'NOT_AFFORDABLE'}")
+            gross_base = float(qty) * buy_px * fx_rate
+            commission = costs.commission(gross_base)
+            total_debit = gross_base + commission
+            if total_debit > self.cash + 1e-6:
+                raise TrainingError("INTEGER_ENTRY_REJECTED:INSUFFICIENT_CASH")
+        else:
+            # Legacy: shares from target notional after slippage (fractional OK).
+            qty = target_notional_base / (buy_px * fx_rate)
             gross_base = qty * buy_px * fx_rate
             commission = costs.commission(gross_base)
             total_debit = gross_base + commission
+            if total_debit > self.cash + 1e-6:
+                scale = (
+                    self.cash / (gross_base + commission) if (gross_base + commission) > 0 else 0.0
+                )
+                if scale <= 1e-12:
+                    raise TrainingError("Insufficient cash for entry")
+                qty *= scale
+                gross_base = qty * buy_px * fx_rate
+                commission = costs.commission(gross_base)
+                total_debit = gross_base + commission
 
         slip_impact = qty * (buy_px - raw_open) * fx_rate
         self.cash -= total_debit

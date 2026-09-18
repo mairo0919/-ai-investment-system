@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from src.config.settings import PROJECT_ROOT
+from src.simulation.execution_policy import ExecutionPolicy
 
 CandidateMode = Literal["top_percentile", "top_n"]
 RebalanceFrequency = Literal["daily", "weekly", "biweekly"]
@@ -54,6 +55,8 @@ class SimulationConfig:
     trailing_stop_pct: float | None = None
     cooldown_days: int = 0
     cost_presets: dict[str, dict[str, float]] | None = None
+    # Opt-in; default preserves legacy fractional / equal-weight behavior.
+    execution_policy: ExecutionPolicy = ExecutionPolicy()
 
     def with_strategy(self, name: str) -> SimulationConfig:
         if name not in self.strategies:
@@ -117,11 +120,26 @@ class SimulationConfig:
                 buckets[section][field] = value
             elif key == "mode":
                 cand["mode"] = value
-        # Preserve strategies/cost_presets from original
+            elif key == "initial_capital":
+                data["initial_capital"] = value
+            elif key == "execution_policy":
+                if isinstance(value, ExecutionPolicy):
+                    data["execution_policy"] = {
+                        "share_mode": value.share_mode,
+                        "minimum_quantity": value.minimum_quantity,
+                        "allow_fractional": value.allow_fractional,
+                        "sizing_mode": value.sizing_mode,
+                        "min_lot_overrides_weight": value.min_lot_overrides_weight,
+                    }
+                elif isinstance(value, dict):
+                    data["execution_policy"] = deepcopy(value)
+        # Preserve strategies/cost_presets / execution_policy from original when unset
         if "strategies" not in data:
             data["strategies"] = deepcopy(self.strategies)
         if self.cost_presets is not None:
             data["cost_presets"] = deepcopy(self.cost_presets)
+        if "execution_policy" not in data and "execution_policy" in self.raw:
+            data["execution_policy"] = deepcopy(self.raw["execution_policy"])
         return parse_simulation_config(data)
 
     def apply_runtime_thresholds(
@@ -203,6 +221,9 @@ def parse_simulation_config(data: dict[str, Any]) -> SimulationConfig:
     }
     if "cost_presets" in data:
         presets.update(dict(data["cost_presets"]))
+    policy_raw = data.get("execution_policy")
+    if policy_raw is None and isinstance(data.get("execution"), dict):
+        policy_raw = data["execution"].get("policy")
     return SimulationConfig(
         raw=deepcopy(data),
         initial_capital=float(data.get("initial_capital", 10_000_000)),
@@ -242,6 +263,9 @@ def parse_simulation_config(data: dict[str, Any]) -> SimulationConfig:
         trailing_stop_pct=_opt_float(exits.get("trailing_stop_pct")),
         cooldown_days=int(exits.get("cooldown_days", 0) or 0),
         cost_presets=presets,
+        execution_policy=ExecutionPolicy.from_dict(
+            policy_raw if isinstance(policy_raw, dict) else None
+        ),
     )
 
 

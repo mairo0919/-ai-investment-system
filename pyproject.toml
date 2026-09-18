@@ -46,6 +46,7 @@ run-simulation-diagnostics = "src.simulation.diagnostics_runner:main"
 run-rule-optimization = "src.simulation.rule_optimization_runner:main"
 run-true-holdout = "src.simulation.holdout_runner:main"
 run-paper-trading = "src.paper.runner:main"
+run-small-capital-paper = "src.paper.small_capital:main"
 serve-paper-dashboard = "src.dashboard.server:main"
 
 [tool.setuptools.packages.find]
