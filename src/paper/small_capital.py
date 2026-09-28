@@ -198,6 +198,8 @@ class SmallCapitalPaperRunner(PaperTradingRunner):
         (self.report_dir / "monthly").mkdir(parents=True, exist_ok=True)
         self.execution_audit = ExecutionAuditStore(settings.paper_state_dir)
         self.execution_audit.ensure_file()
+        # Momentum benchmark reuses SimulationEngine; do not audit that track.
+        self._suppress_execution_audit = False
 
     def persist_execution_events(
         self,
@@ -207,6 +209,8 @@ class SmallCapitalPaperRunner(PaperTradingRunner):
         config_id: str | None = None,
     ) -> int:
         """Persist engine execution_events into execution_decisions.csv (idempotent)."""
+        if self._suppress_execution_audit:
+            return 0
         events = list(result.meta.get("execution_events") or [])
         if not events:
             return 0
@@ -255,6 +259,114 @@ class SmallCapitalPaperRunner(PaperTradingRunner):
             processed_sessions=processed_sessions,
             skip_reason=skip_reason,
         )
+
+    def _last_equity_session(self) -> pd.Timestamp | None:
+        """Latest equity row, which is the session the engine actually marked."""
+        path = self.store.equity_history_path
+        if not path.exists():
+            return None
+        try:
+            frame = pd.read_csv(path)
+        except Exception:  # noqa: BLE001
+            return None
+        if frame.empty or "Date" not in frame.columns:
+            return None
+        dates = pd.to_datetime(frame["Date"], errors="coerce").dropna()
+        if dates.empty:
+            return None
+        return pd.Timestamp(dates.max()).normalize()
+
+    def _session_limited_asof(
+        self,
+        asof: pd.Timestamp,
+        *,
+        prefer_saved_processed_date: bool = False,
+    ) -> pd.Timestamp:
+        """Paper as-of for a capped run is the last processed session.
+
+        Unlimited catch-up keeps the caller as-of (legacy market date).
+        Benchmark tracks run before ``last_processed_date`` is rewritten, so
+        they use the latest equity session. The validity gate runs after that
+        rewrite and uses the saved processed date, then ignores later rows.
+        """
+        requested = pd.Timestamp(asof).normalize()
+        if self.max_sessions is None:
+            return requested
+        if prefer_saved_processed_date:
+            state = self.store.load()
+            if state is not None and state.last_processed_date:
+                saved = pd.Timestamp(state.last_processed_date).normalize()
+                if saved < requested:
+                    return saved
+                return requested
+        last = self._last_equity_session()
+        if last is not None and last < requested:
+            return last
+        return requested
+
+    def _update_benchmark_tracks(
+        self,
+        *,
+        us_px: pd.DataFrame,
+        mom_rankings: pd.DataFrame,
+        fx: Any,
+        asof: pd.Timestamp,
+        state_model_id: str,
+    ) -> None:
+        """Benchmark curve is not an AI execution decision.
+
+        The parent runner builds it with another ``SimulationEngine``. While the
+        Small Capital engine class is patched for audit persistence, that second
+        engine must not append momentum ranks into ``execution_decisions.csv``.
+        Session-limited runs also stop the track at the last processed session
+        so later market dates do not enter the files the validity gate reads.
+        """
+        self._suppress_execution_audit = True
+        try:
+            return super()._update_benchmark_tracks(
+                us_px=us_px,
+                mom_rankings=mom_rankings,
+                fx=fx,
+                asof=self._session_limited_asof(asof),
+                state_model_id=state_model_id,
+            )
+        finally:
+            self._suppress_execution_audit = False
+
+    def _emit_validity_gate(
+        self,
+        *,
+        asof: pd.Timestamp,
+        model_id: str,
+        run_health_ctx: dict[str, Any] | None = None,
+    ) -> None:
+        """Session-limited validity is as of the processed session, not market as-of."""
+        gate_asof = self._session_limited_asof(asof, prefer_saved_processed_date=True)
+        if self.max_sessions is None:
+            return super()._emit_validity_gate(
+                asof=asof,
+                model_id=model_id,
+                run_health_ctx=run_health_ctx,
+            )
+        parent_fn = super()._emit_validity_gate.__func__
+        globs = parent_fn.__globals__
+        real_eval = globs["evaluate_validity_gate"]
+
+        def _eval_through_processed(**kwargs: Any) -> dict[str, Any]:
+            kwargs["asof"] = gate_asof
+            kwargs["history_end"] = gate_asof
+            return real_eval(**kwargs)
+
+        globs["evaluate_validity_gate"] = _eval_through_processed
+        try:
+            return parent_fn(
+                self,
+                asof=gate_asof,
+                model_id=model_id,
+                run_health_ctx=run_health_ctx,
+            )
+        finally:
+            globs["evaluate_validity_gate"] = real_eval
 
     def _rewrite_last_processed_date(self, processed_asof: pd.Timestamp) -> None:
         """Parent runner stamps the market as-of; keep the real processed session."""

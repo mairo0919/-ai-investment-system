@@ -464,6 +464,10 @@ class SimulationEngine:
                                         "rank": sk.rank,
                                     }
                                 )
+                                if sk.score is None or not pd.notna(sk.score):
+                                    score_token = ""
+                                else:
+                                    score_token = format(float(sk.score), ".10g")
                                 execution_events.append(
                                     {
                                         "Date": str(day.date()),
@@ -484,7 +488,7 @@ class SimulationEngine:
                                         "Currency": sk.currency,
                                         "order_identity": (
                                             f"{day.date()}|{sk.symbol}|SKIPPED|"
-                                            f"{sk.reason}|{sk.rank}"
+                                            f"{sk.reason}|{sk.rank}|{score_token}"
                                         ),
                                     }
                                 )

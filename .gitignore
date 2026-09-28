@@ -47,6 +47,10 @@ htmlcov/
 data/paper/*
 !data/paper/.gitkeep
 
+# Small Capital and other paper experiment runtime state
+data/paper_experiments/*
+!data/paper_experiments/.gitkeep
+
 data/raw/*
 !data/raw/.gitkeep
 !data/raw/market/

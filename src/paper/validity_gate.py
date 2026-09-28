@@ -107,6 +107,24 @@ def _read_optional_total_return(path: Path) -> tuple[float | None, str]:
         return None, "invalid"
 
 
+def _clip_history_through(
+    equity: pd.DataFrame,
+    trades: pd.DataFrame,
+    history_end: pd.Timestamp | str | None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Drop sessions after ``history_end``. ``None`` leaves frames unchanged."""
+    if history_end is None:
+        return equity, trades
+    end = pd.Timestamp(history_end).normalize()
+    if equity is not None and not equity.empty and "Date" in equity.columns:
+        dates = pd.to_datetime(equity["Date"], errors="coerce").dt.normalize()
+        equity = equity.loc[dates.notna() & (dates <= end)].copy()
+    if trades is not None and not trades.empty and "Exit Date" in trades.columns:
+        dates = pd.to_datetime(trades["Exit Date"], errors="coerce").dt.normalize()
+        trades = trades.loc[dates.notna() & (dates <= end)].copy()
+    return equity, trades
+
+
 def evaluate_validity_gate(
     *,
     store: PaperStore,
@@ -117,6 +135,7 @@ def evaluate_validity_gate(
     benchmark_track_path: Path | None = None,
     momentum_state_path: Path | None = None,
     gate_config: dict[str, Any] | None = None,
+    history_end: pd.Timestamp | str | None = None,
 ) -> dict[str, Any]:
     """Deterministic gate from PaperStore artifacts (+ optional bench JSON paths)."""
     cfg = gate_config or load_gate_config()
@@ -131,6 +150,7 @@ def evaluate_validity_gate(
         else pd.DataFrame()
     )
     trades = _load_trades(store.trade_history_path)
+    equity, trades = _clip_history_through(equity, trades, history_end)
     port = store.load()
     asof_s = (
         str(pd.Timestamp(asof).date())

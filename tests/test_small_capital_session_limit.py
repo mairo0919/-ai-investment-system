@@ -286,7 +286,13 @@ def test_N_existing_data_paper_untouched(tmp_path: Path) -> None:
     _ = tmp_path / "unused"
     after = {p.name: p.stat().st_mtime_ns for p in canonical.iterdir() if p.is_file()}
     assert before == after
-    assert not (PROJECT_ROOT / "data" / "paper_experiments" / "small_capital_10k").exists()
+    real = PROJECT_ROOT / "data" / "paper_experiments" / "small_capital_10k"
+    # The limit helper must not create experiment state. A pre-existing smoke
+    # directory is runtime state and must be left in place.
+    if real.exists():
+        assert (real / "portfolio.json").exists()
+    else:
+        assert not real.exists()
 
 
 def test_O_legacy_paper_runner_has_no_session_limit() -> None:
