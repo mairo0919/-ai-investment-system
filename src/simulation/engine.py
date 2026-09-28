@@ -191,7 +191,13 @@ class SimulationEngine:
                 notional = float(o.quantity)
                 buy_reservation[key] = notional + self.costs.commission(notional)
 
+        # Opt-in (Small Capital only). None preserves the full calendar.
+        # The following session stays visible as next_day so close signals can
+        # queue, but that session is not filled or marked processed.
+        session_limit = getattr(self, "process_session_limit", None)
         for i, day in enumerate(calendar):
+            if session_limit is not None and i >= int(session_limit):
+                break
             next_day = calendar[i + 1] if i + 1 < len(calendar) else None
             day_entries = 0
             day_exits = 0

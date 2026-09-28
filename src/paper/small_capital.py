@@ -14,10 +14,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from src.config.settings import PROJECT_ROOT, Settings, get_settings
 from src.core.exceptions import TrainingError
 from src.paper.execution_audit import ExecutionAuditStore
 from src.paper.lineage import LOCKED_PAPER_MODEL_ID, STRATEGY_CONFIG_ID
+from src.paper.observation_store import STATUS_SUCCESS
 from src.paper.runner import PaperTradingRunner
 from src.simulation.config import SimulationConfig
 from src.simulation.engine import SimulationEngine, SimulationResult
@@ -40,6 +43,72 @@ EXPERIMENT_ID = "small_capital_10k"
 DEFAULT_STATE_DIR = PROJECT_ROOT / "data" / "paper_experiments" / "small_capital_10k"
 CANONICAL_10M_STATE_DIR = (PROJECT_ROOT / "data" / "paper").resolve()
 DEFAULT_CONFIG = Path("config/paper_trading_small_capital_10k.json")
+
+
+def parse_max_sessions(value: str) -> int:
+    """CLI type: positive integer. Omitted flag stays ``None`` (full catch-up)."""
+    text = str(value).strip()
+    try:
+        if text.startswith("+"):
+            raise ValueError
+        number = int(text)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            f"--max-sessions must be a positive integer, got {value!r}"
+        ) from exc
+    if number < 1:
+        raise argparse.ArgumentTypeError(
+            f"--max-sessions must be a positive integer, got {value!r}"
+        )
+    return number
+
+
+def unprocessed_market_sessions(
+    market_dates: Any,
+    *,
+    forward_start: pd.Timestamp,
+    last_processed: str | pd.Timestamp | None,
+    asof: pd.Timestamp,
+) -> list[pd.Timestamp]:
+    """Market sessions the paper runner would still process (inclusive as-of).
+
+    Matches ``PaperTradingRunner`` resume: empty state starts at forward start;
+    otherwise the next business day after ``last_processed_date``.
+    """
+    if last_processed:
+        sim_start = pd.Timestamp(last_processed).normalize() + pd.tseries.offsets.BDay(1)
+        sim_start = pd.Timestamp(sim_start).normalize()
+    else:
+        sim_start = pd.Timestamp(forward_start).normalize()
+    asof_n = pd.Timestamp(asof).normalize()
+    days = sorted({pd.Timestamp(d).normalize() for d in market_dates})
+    return [d for d in days if sim_start <= d <= asof_n]
+
+
+def limit_unprocessed_sessions(
+    sessions: list[pd.Timestamp],
+    max_sessions: int | None,
+) -> list[pd.Timestamp]:
+    """Keep the next ``max_sessions`` unprocessed sessions. ``None`` keeps all."""
+    if max_sessions is None:
+        return list(sessions)
+    return list(sessions)[: int(max_sessions)]
+
+
+def clamp_processed_session_days(
+    session_days: list[Any],
+    *,
+    asof: pd.Timestamp,
+    max_sessions: int | None,
+) -> list[pd.Timestamp]:
+    """Drop the next-open buffer day and apply the invocation session cap."""
+    asof_n = pd.Timestamp(asof).normalize()
+    market = [
+        pd.Timestamp(d).normalize()
+        for d in session_days
+        if pd.Timestamp(d).normalize() <= asof_n
+    ]
+    return limit_unprocessed_sessions(market, max_sessions)
 
 
 def assert_small_capital_state_dir(path: Path) -> Path:
@@ -97,7 +166,14 @@ class SmallCapitalPaperRunner(PaperTradingRunner):
         settings: Settings,
         universe_path: Path,
         config_path: Path,
+        *,
+        max_sessions: int | None = None,
     ) -> None:
+        if max_sessions is not None and int(max_sessions) < 1:
+            raise TrainingError(
+                f"max_sessions must be a positive integer, got {max_sessions!r}"
+            )
+        self.max_sessions = None if max_sessions is None else int(max_sessions)
         assert_small_capital_state_dir(settings.paper_state_dir)
         super().__init__(settings, universe_path, config_path)
         exp = str(self.raw.get("experiment_id") or "")
@@ -145,6 +221,49 @@ class SmallCapitalPaperRunner(PaperTradingRunner):
             enriched.append(row)
         return self.execution_audit.append_events(enriched)
 
+    def _persist_observations(
+        self,
+        *,
+        run_health_ctx: dict[str, Any],
+        status: str,
+        asof: pd.Timestamp,
+        ai_rankings: pd.DataFrame,
+        price_panel: pd.DataFrame,
+        session_days: list[pd.Timestamp],
+        processed_sessions: int,
+        skip_reason: str | None,
+    ) -> None:
+        """Record only sessions this invocation actually processed."""
+        if self.max_sessions is not None and status == STATUS_SUCCESS:
+            limited = clamp_processed_session_days(
+                session_days,
+                asof=asof,
+                max_sessions=self.max_sessions,
+            )
+            if limited:
+                session_days = limited
+                processed_sessions = len(limited)
+                asof = limited[-1]
+                self._rewrite_last_processed_date(asof)
+        super()._persist_observations(
+            run_health_ctx=run_health_ctx,
+            status=status,
+            asof=asof,
+            ai_rankings=ai_rankings,
+            price_panel=price_panel,
+            session_days=session_days,
+            processed_sessions=processed_sessions,
+            skip_reason=skip_reason,
+        )
+
+    def _rewrite_last_processed_date(self, processed_asof: pd.Timestamp) -> None:
+        """Parent runner stamps the market as-of; keep the real processed session."""
+        state = self.store.load()
+        if state is None:
+            return
+        state.last_processed_date = str(pd.Timestamp(processed_asof).date())
+        self.store.save_atomic(state)
+
     def run(self, *, force_refresh: bool = False) -> dict[str, Any]:
         """Run paper catch-up while persisting SC execution audit without editing runner.py."""
         import src.paper.runner as runner_mod
@@ -152,6 +271,12 @@ class SmallCapitalPaperRunner(PaperTradingRunner):
         outer = self
 
         class _AuditingEngine(SimulationEngine):
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                # None → full catch-up. A positive cap stops after that many
+                # sessions while still seeing the next session as next-open.
+                self.process_session_limit = outer.max_sessions
+
             def run(self, *args: Any, **kwargs: Any) -> SimulationResult:  # type: ignore[override]
                 result = SimulationEngine.run(self, *args, **kwargs)
                 try:
@@ -195,6 +320,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Override PAPER_STATE_DIR (must not be data/paper)",
     )
     parser.add_argument("--force-refresh", action="store_true")
+    parser.add_argument(
+        "--max-sessions",
+        type=parse_max_sessions,
+        default=None,
+        help="Max unprocessed market sessions for this invocation (default: all)",
+    )
     args = parser.parse_args(argv)
 
     get_settings.cache_clear()
@@ -206,9 +337,12 @@ def main(argv: list[str] | None = None) -> int:
     set_phase("main")
     try:
         with phase_span("small_capital_paper_main"):
-            SmallCapitalPaperRunner(settings, args.universe, args.config).run(
-                force_refresh=args.force_refresh
-            )
+            SmallCapitalPaperRunner(
+                settings,
+                args.universe,
+                args.config,
+                max_sessions=args.max_sessions,
+            ).run(force_refresh=args.force_refresh)
         mark_exit_status("ok")
         log_diag("main_return_ok")
         return 0
