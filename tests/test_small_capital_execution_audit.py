@@ -18,6 +18,7 @@ from src.paper.execution_audit import (
     REASON_FILL_PRICE_UNAFFORDABLE,
     REASON_INSUFFICIENT_CASH,
     REASON_NOT_AFFORDABLE,
+    AuditLogCorruptError,
     ExecutionAuditStore,
 )
 from src.paper.small_capital import EXPERIMENT_ID, assert_small_capital_state_dir
@@ -553,23 +554,25 @@ def test_J_canonical_10m_untouched() -> None:
 def test_K_corrupt_audit_history_safe(tmp_path: Path) -> None:
     store = ExecutionAuditStore(tmp_path)
     store.path.write_text("{not csv", encoding="utf-8")
+    before = store.path.read_bytes()
     df = store.load_frame()
     assert list(df.columns) == AUDIT_COLUMNS
     assert df.empty
-    n = store.append_events(
-        [
-            {
-                "Date": "2020-06-01",
-                "Symbol": "Z",
-                "Decision": DECISION_SKIPPED,
-                "Reason": REASON_NOT_AFFORDABLE,
-                "experiment_id": EXPERIMENT_ID,
-                "order_identity": "x",
-            }
-        ]
-    )
-    assert n == 1
-    assert len(store.load_frame()) == 1
+    assert store.path.read_bytes() == before
+    with pytest.raises(AuditLogCorruptError):
+        store.append_events(
+            [
+                {
+                    "Date": "2020-06-01",
+                    "Symbol": "Z",
+                    "Decision": DECISION_SKIPPED,
+                    "Reason": REASON_NOT_AFFORDABLE,
+                    "experiment_id": EXPERIMENT_ID,
+                    "order_identity": "x",
+                }
+            ]
+        )
+    assert store.path.read_bytes() == before
 
 
 def test_L_model_ranking_outputs_unchanged_by_audit_module() -> None:

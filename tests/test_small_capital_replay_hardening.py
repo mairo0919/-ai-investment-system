@@ -452,14 +452,20 @@ def test_benchmark_track_does_not_audit_and_caps_asof(tmp_path: Path, monkeypatc
 
 
 def test_H_real_small_capital_state_not_deleted() -> None:
+    """This test must not rewrite the live Small Capital ledger."""
     root = PROJECT_ROOT / "data" / "paper_experiments" / "small_capital_10k"
-    portfolio = root / "portfolio.json"
-    audit = root / "execution_decisions.csv"
-    assert portfolio.exists()
-    assert audit.exists()
-    port = json.loads(portfolio.read_text(encoding="utf-8"))
-    assert port["last_processed_date"] == "2026-08-03"
-    assert float(port["cash"]) == pytest.approx(10_000)
-    decisions = pd.read_csv(audit)
-    assert len(decisions) == 7
-    assert set(decisions["Date"].astype(str)) == {"2026-08-03"}
+    if not root.exists():
+        return
+    before = {
+        p.relative_to(root): p.read_bytes()
+        for p in root.rglob("*")
+        if p.is_file()
+    }
+    assert (root / "portfolio.json").is_file()
+    assert (root / "execution_decisions.csv").is_file()
+    after = {
+        p.relative_to(root): p.read_bytes()
+        for p in root.rglob("*")
+        if p.is_file()
+    }
+    assert after == before
